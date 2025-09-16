@@ -99,7 +99,6 @@ def distort_points(pts, dist):
     """Distort normalized 2D coordinates
     and check for validity of the distortion model.
     """
-    dist = dist.unsqueeze(-2)  # add point dimension
     ndist = dist.shape[-1]
     undist = pts
     valid = torch.ones(pts.shape[:-1], device=pts.device, dtype=torch.bool)

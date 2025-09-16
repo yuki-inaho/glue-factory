@@ -138,14 +138,15 @@ class Pose(tensor.TensorWrapper):
         return self.__class__.from_Rt(R, t)
 
     @tensor.autocast
+    @tensor.autovmap
     def transform(self, p3d: torch.Tensor) -> torch.Tensor:
-        """Transform a set of 3D points.
+        """Transform a set of 3D points (or 4D hom.).
         Args:
             p3d: 3D points, numpy array or PyTorch tensor with shape (..., 3).
         """
-        assert p3d.shape[-1] == 3
-        # assert p3d.shape[:-2] == self.shape  # allow broadcasting
-        return p3d @ self.R.transpose(-1, -2) + self.t.unsqueeze(-2)
+        assert p3d.shape[-1] in (3, 4), p3d.shape
+        sc = 1.0 if p3d.shape[-1] == 3 else p3d[..., -1:]
+        return self.R @ p3d[..., :3] + self.t * sc
 
     def __mul__(self, p3D: torch.Tensor) -> torch.Tensor:
         """Transform a set of 3D points: T_A2B * p3D_A -> p3D_B."""
@@ -355,6 +356,13 @@ class Camera(tensor.TensorWrapper):
         data = torch.cat([self.size * s, self.f * s, self.c * s, self.dist], -1)
         return self.__class__(data)
 
+    def empty_image(self, rgb: bool = False) -> torch.Tensor:  # H X W or 3 X H X W
+        """Create an empty image with the camera size."""
+        assert self._data.ndim == 1, "Only for single cameras."
+        w, h = self.size.long().tolist()
+        dims = (3, h, w) if rgb else (h, w)
+        return torch.zeros(dims, dtype=self._data.dtype, device=self._data.device)
+
     def crop(self, left_top: Tuple[float], size: Tuple[int]):
         """Update the camera parameters after cropping an image."""
         left_top = self._data.new_tensor(left_top)
@@ -363,22 +371,23 @@ class Camera(tensor.TensorWrapper):
         return self.__class__(data)
 
     @tensor.autocast
+    @tensor.autovmap
     def in_image(self, p2d: torch.Tensor):
         """Check if 2D points are within the image boundaries."""
         assert p2d.shape[-1] == 2
         # assert p2d.shape[:-2] == self.shape  # allow broadcasting
-        size = self.size.unsqueeze(-2)
+        size = self.size
         valid = torch.all((p2d >= 0) & (p2d <= (size - 1)), -1)
         return valid
 
     @tensor.autocast
+    @tensor.autovmap
     def project(self, p3d: torch.Tensor) -> Tuple[torch.Tensor]:
         """Project 3D points into the camera plane and check for visibility."""
-        z = p3d[..., -1]
+        z = p3d[..., -1:]
         valid = z > self.eps
         z = z.clamp(min=self.eps)
-        p2d = p3d[..., :-1] / z.unsqueeze(-1)
-        return p2d, valid
+        return p3d[..., :-1] / z, valid[..., 0]
 
     def J_project(self, p3d: torch.Tensor):
         x, y, z = p3d[..., 0], p3d[..., 1], p3d[..., 2]
@@ -389,6 +398,7 @@ class Camera(tensor.TensorWrapper):
         return J  # N x 2 x 3
 
     @tensor.autocast
+    @tensor.autovmap
     def distort(self, pts: torch.Tensor) -> Tuple[torch.Tensor]:
         """Distort normalized 2D coordinates
         and check for validity of the distortion model.
@@ -401,19 +411,22 @@ class Camera(tensor.TensorWrapper):
         return gtr.J_distort_points(pts, self.dist)  # N x 2 x 2
 
     @tensor.autocast
+    @tensor.autovmap
     def denormalize(self, p2d: torch.Tensor) -> torch.Tensor:
         """Convert normalized 2D coordinates into pixel coordinates."""
-        return p2d * self.f.unsqueeze(-2) + self.c.unsqueeze(-2)
+        return p2d * self.f + self.c
 
     @tensor.autocast
+    @tensor.autovmap
     def normalize(self, p2d: torch.Tensor) -> torch.Tensor:
         """Convert normalized 2D coordinates into pixel coordinates."""
-        return (p2d - self.c.unsqueeze(-2)) / self.f.unsqueeze(-2)
+        return (p2d - self.c) / self.f
 
     def J_denormalize(self):
         return torch.diag_embed(self.f).unsqueeze(-3)  # 1 x 2 x 2
 
     @tensor.autocast
+    @tensor.autovmap
     def cam2image(self, p3d: torch.Tensor) -> Tuple[torch.Tensor]:
         """Transform 3D points into 2D pixel coordinates."""
         p2d, visible = self.project(p3d)

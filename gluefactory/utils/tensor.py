@@ -32,6 +32,29 @@ def autocast(func):
     return wrap
 
 
+def autovmap(func):
+    """Batch and vectorize a simple TensorWrapper method."""
+
+    @functools.wraps(func)
+    def wrap(self, arg):
+        assert isinstance(self, TensorWrapper)
+        if arg.ndim == self._data.ndim and arg.ndim == 1:
+            return func(self, arg)
+        elif arg.ndim > self._data.ndim:
+            return torch.vmap(func, in_dims=(None, 0))(self, arg)
+        else:
+            arg = arg.broadcast_to(self.shape + arg.shape[-1:])
+            if arg.ndim == self._data.ndim:
+                cls = self.__class__
+                return torch.vmap(lambda d, x: func(cls(d), x))(self._data, arg)
+            else:
+                raise ValueError(
+                    f"Broadcast failed: self._data={self._data.shape}, arg={arg.shape}."
+                )
+
+    return wrap
+
+
 class TensorWrapper:
     """Wrapper for PyTorch tensors."""
 
@@ -154,6 +177,11 @@ class TensorWrapper:
             out = out._data
         ret = torch.where(condition.unsqueeze(-1), input._data, other._data, out=out)
         return cls(ret)
+
+    def vmap(self, func, *args, **kwargs):
+        """Vectorized map over the leading dimension."""
+        cls = self.__class__
+        return torch.vmap(lambda d, *x, **xx: func(cls(d), *x, **xx), *args, **kwargs)
 
     @classmethod
     def __torch_function__(cls, func, types, args=(), kwargs=None):
