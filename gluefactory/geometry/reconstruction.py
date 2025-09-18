@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 class Pose(tensor.TensorWrapper):
     def __init__(self, data: torch.Tensor):
-        assert data.shape[-1] == 12
+        assert data.shape[-1] == 12, data.shape
         super().__init__(data)
 
     @classmethod
@@ -379,6 +379,16 @@ class Camera(tensor.TensorWrapper):
         size = self.size
         valid = torch.all((p2d >= 0) & (p2d <= (size - 1)), -1)
         return valid
+
+    @tensor.autovmap
+    def denormalize_pixels(self, p2d: torch.Tensor) -> torch.Tensor:
+        """Convert normalized 2D coordinates into pixel coordinates."""
+        return (p2d + 1) / 2 * self.size
+
+    @tensor.autovmap
+    def normalize_pixels(self, p2d: torch.Tensor) -> torch.Tensor:
+        """Convert pixel coordinates into normalized 2D coordinates."""
+        return p2d / self.size * 2 - 1
 
     @tensor.autocast
     @tensor.autovmap
