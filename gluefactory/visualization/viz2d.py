@@ -66,7 +66,9 @@ def cm_grad2d(xy):
     return rgb.clip(0, 1)
 
 
-def plot_images(imgs, titles=None, cmaps="gray", dpi=100, pad=0.5, adaptive=True):
+def plot_images(
+    imgs, titles=None, cmaps="gray", dpi=100, pad=0.5, adaptive=True, **kwargs
+):
     """Plot a set of images horizontally.
     Args:
         imgs: a list of NumPy or PyTorch images, RGB (H, W, 3) or mono (H, W).
@@ -94,7 +96,7 @@ def plot_images(imgs, titles=None, cmaps="gray", dpi=100, pad=0.5, adaptive=True
     if n == 1:
         axs = [axs]
     for i, (img, ax) in enumerate(zip(imgs, axs)):
-        ax.imshow(img, cmap=plt.get_cmap(cmaps[i]))
+        ax.imshow(img, cmap=plt.get_cmap(cmaps[i]), **kwargs)
         ax.set_axis_off()
         if titles:
             ax.set_title(titles[i])
@@ -112,6 +114,7 @@ def plot_image_grid(
     figs=2.0,
     return_fig=False,
     set_lim=False,
+    **kwargs,
 ):
     """Plot a grid of images.
     Args:
@@ -143,7 +146,7 @@ def plot_image_grid(
     for j in range(nr):
         for i in range(n):
             ax = axs[j][i]
-            ax.imshow(imgs[j][i], cmap=plt.get_cmap(cmaps[i]))
+            ax.imshow(imgs[j][i], cmap=plt.get_cmap(cmaps[i]), **kwargs)
             ax.set_axis_off()
             if set_lim:
                 ax.set_xlim([0, imgs[j][i].shape[1]])
