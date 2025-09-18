@@ -41,12 +41,12 @@ def autovmap(func):
         if arg.ndim == self._data.ndim and arg.ndim == 1:
             return func(self, arg)
         elif arg.ndim > self._data.ndim:
-            return torch.vmap(func, in_dims=(None, 0))(self, arg)
+            return torch.vmap(wrap, in_dims=(None, 0))(self, arg)
         else:
             arg = arg.broadcast_to(self.shape + arg.shape[-1:])
             if arg.ndim == self._data.ndim:
                 cls = self.__class__
-                return torch.vmap(lambda d, x: func(cls(d), x))(self._data, arg)
+                return torch.vmap(lambda d, x: wrap(cls(d), x))(self._data, arg)
             else:
                 raise ValueError(
                     f"Broadcast failed: self._data={self._data.shape}, arg={arg.shape}."
