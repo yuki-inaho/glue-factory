@@ -278,6 +278,10 @@ class StepTimer:
         """Return the number of steps measured."""
         return list(self.stats.values())[0].count if self.stats else 0
 
+    def __getitem__(self, name: str) -> float:
+        """Get the average time for a specific operation."""
+        return self.stats[name].compute()[0]
+
 
 def collect_device_stats() -> dict[str, float]:
     """Collect device usage statistics."""
