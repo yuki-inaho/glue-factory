@@ -206,7 +206,7 @@ class BaseDataset(metaclass=ABCMeta):
             collate_fn=collate,
             num_workers=num_workers,
             worker_init_fn=worker_init_fn,
-            prefetch_factor=self.conf.prefetch_factor,
+            prefetch_factor=self.conf.prefetch_factor if num_workers > 0 else None,
             drop_last=drop_last,
         )
 
