@@ -38,6 +38,8 @@ def autovmap(func):
     @functools.wraps(func)
     def wrap(self, arg):
         assert isinstance(self, TensorWrapper)
+        cls = self.__class__
+        _wrap = lambda d, x: func(cls(d), x)
         if arg.ndim == self._data.ndim and arg.ndim == 1:
             return func(self, arg)
         elif (
@@ -46,15 +48,13 @@ def autovmap(func):
             and arg.shape[0] == self._data.shape[0]
         ):
             # Handle the lazy scenario: wrapper BxP, arg BxNxD
-            cls = self.__class__
-            return torch.vmap(lambda d, x: wrap(cls(d), x))(self._data, arg)
+            return torch.vmap(_wrap)(self._data, arg)
         elif arg.ndim > self._data.ndim:
-            return torch.vmap(wrap, in_dims=(None, 0))(self, arg)
+            return torch.vmap(_wrap, in_dims=(None, 0))(self._data, arg)
         else:
             arg = arg.broadcast_to(self.shape + arg.shape[-1:])
             if arg.ndim == self._data.ndim:
-                cls = self.__class__
-                return torch.vmap(lambda d, x: wrap(cls(d), x))(self._data, arg)
+                return torch.vmap(_wrap)(self._data, arg)
             else:
                 raise ValueError(
                     f"Broadcast failed: self._data={self._data.shape}, arg={arg.shape}."
