@@ -199,6 +199,7 @@ def flatten_dict(
     dictionary: Mapping[str, Any],
     parent_keys: tuple[str, ...] = (),
     sep: str | None = ".",
+    cast_to_str: bool = False,
 ) -> dict[str | tuple[str, ...], Any]:
     items = []
     for key, value in dictionary.items():
@@ -210,7 +211,9 @@ def flatten_dict(
     flat_dict = dict(items)
     if len(parent_keys) == 0 and sep is not None:
         # Top-level
-        return {sep.join(k): v for k, v in flat_dict.items()}
+        return {
+            sep.join(map(str, k) if cast_to_str else k): v for k, v in flat_dict.items()
+        }
     else:
         return flat_dict
 
