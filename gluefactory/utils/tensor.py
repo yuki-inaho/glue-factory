@@ -40,6 +40,14 @@ def autovmap(func):
         assert isinstance(self, TensorWrapper)
         if arg.ndim == self._data.ndim and arg.ndim == 1:
             return func(self, arg)
+        elif (
+            arg.ndim == 3
+            and self._data.ndim == 2
+            and arg.shape[0] == self._data.shape[0]
+        ):
+            # Handle the lazy scenario: wrapper BxP, arg BxNxD
+            cls = self.__class__
+            return torch.vmap(lambda d, x: wrap(cls(d), x))(self._data, arg)
         elif arg.ndim > self._data.ndim:
             return torch.vmap(wrap, in_dims=(None, 0))(self, arg)
         else:
