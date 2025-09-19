@@ -179,7 +179,7 @@ class BaseModel(nn.Module, metaclass=MetaModel):
 
     def compile(self, *args, **kwargs) -> "BaseModel":
         """Compile the model for faster inference."""
-        model = torch.compile(self, *args, **kwargs)
+        super().compile(*args, **kwargs)
         if self.conf.compile_loss:
-            model.loss = self.loss
-        return model
+            self.loss = torch.compile(self.loss, *args, **kwargs)
+        return self

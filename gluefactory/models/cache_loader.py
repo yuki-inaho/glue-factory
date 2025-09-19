@@ -101,7 +101,7 @@ class CacheLoader(BaseModel):
             fpath = self.conf.path.format(**{k: data[k][i] for k in var_names})
             if self.conf.add_data_path:
                 fpath = settings.DATA_PATH / fpath
-            hfile = h5py.File(str(fpath), "r")
+            hfile = h5py.File(str(fpath), "r", locking=False)
             grp = hfile[name]
             pkeys = (
                 self.conf.data_keys

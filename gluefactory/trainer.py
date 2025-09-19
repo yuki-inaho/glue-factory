@@ -13,6 +13,7 @@ import numpy as np
 import torch
 import torch.distributed as dist
 from omegaconf import DictConfig, OmegaConf
+from pycolmap import logging
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
@@ -283,28 +284,55 @@ class Trainer:
     def load_checkpoint(
         self,
         checkpoint: Any,
-        strict: bool = False,
+        strict: bool = True,
         load_state: bool = False,
         load_modelconfig: bool = False,
     ):
-        # TODO: Fix bug when loading distributed cp from single gpu
-        self.model.load_state_dict(checkpoint["model"], strict=strict)
+        if isinstance(self.model, torch.nn.parallel.DistributedDataParallel):
+            # Fix distributed model naming
+            checkpoint["model"] = {
+                (k if k.startswith("module.") else "module." + k): v
+                for k, v in checkpoint["model"].items()
+            }
+        missing, unexpected = self.model.load_state_dict(
+            checkpoint["model"], strict=strict
+        )
+        self.info(
+            f"state_dict loaded. Missing keys: {missing or 'None'}. Unexpected keys: {unexpected or 'None'}."
+        )
         if load_modelconfig:
             self.conf.model = OmegaConf.merge(
                 OmegaConf.create(checkpoint["conf"]).model, self.conf.model
             )
+            self.info("Model config loaded.")
         if load_state:
             self.optimizer.load_state_dict(checkpoint["optimizer"])
             if "lr_scheduler" in checkpoint:
                 self.lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
             self.epoch = checkpoint["epoch"]
+            self.info(f"Training state loaded. Resuming at epoch {self.epoch}.")
 
     def maybe_load_checkpoint(self):
         if self.conf.load_experiment:
-            init_cp = experiments.get_last_checkpoint(self.conf.load_experiment)
+            if self.conf.get("load_last_checkpoint", False):
+                self.info(
+                    "Loading last checkpoint from experiment %s",
+                    self.conf.load_experiment,
+                )
+                init_cp = experiments.get_last_checkpoint(self.conf.load_experiment)
+            else:
+                self.info(
+                    "Loading best checkpoint from experiment %s",
+                    self.conf.load_experiment,
+                )
+                init_cp = experiments.get_best_checkpoint(self.conf.load_experiment)
             self.info("Loading checkpoint %s", str(init_cp))
-            init_cp = torch.load(
-                str(init_cp), map_location="cpu", weights_only=not settings.ALLOW_PICKLE
+            init_cp = experiments.load_checkpoint(
+                init_cp,
+                map_location="cpu",
+                weights_only=self.conf.get(
+                    "load_weights_only", not settings.ALLOW_PICKLE
+                ),
             )
             self.load_checkpoint(
                 init_cp,
@@ -370,7 +398,7 @@ class Trainer:
         # TODO
 
     def prepare_model(self):
-        if self.conf.compile:
+        if self.conf.compile is not None:
             # Compile before DDP
             self.model = self.model.compile(mode=self.conf.compile)
         if self.distributed:
@@ -826,6 +854,14 @@ class Trainer:
                     self.test_loop(output_dir, bench_name, bench_conf, writer)
                 if self.distributed:
                     dist.barrier()
+
+        # Final evals
+        for bench_name, (bench_conf, _) in self.benchmarks.items():
+            if self.rank == 0:
+                # TODO: Make benchmarks distributed!
+                self.test_loop(output_dir, bench_name, bench_conf, writer)
+            if self.distributed:
+                dist.barrier()
 
 
 def scale_by_device_count(

@@ -9,7 +9,7 @@ import os
 import re
 import shutil
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import hydra
 import pkg_resources
@@ -73,10 +73,8 @@ def list_checkpoints(dir_):
         assert len(numbers) <= 2
         if len(numbers) == 0:
             continue
-        if len(numbers) == 1:
-            checkpoints.append((int(numbers[0]), p))
         else:
-            checkpoints.append((int(numbers[1]), p))
+            checkpoints.append((int(numbers[0]), p))
     return checkpoints
 
 
@@ -116,6 +114,22 @@ def delete_old_checkpoints(dir_, num_keep):
             kept += 1
 
 
+def load_checkpoint(
+    ckpt: Path | str,
+    weights_only: bool = not settings.ALLOW_PICKLE,
+    map_location="cpu",
+    **kwargs,
+) -> dict[str, Any]:
+    ckpt = torch.load(
+        str(ckpt), map_location=map_location, weights_only=weights_only, **kwargs
+    )
+    # Fix distributed model loading
+    ckpt["model"] = {k.replace("module.", ""): v for k, v in ckpt["model"].items()}
+    # Fix compiled model loading (old)
+    ckpt["model"] = {k.replace("_orig_mod.", ""): v for k, v in ckpt["model"].items()}
+    return ckpt
+
+
 def load_experiment(
     exper, conf={}, get_last=False, ckpt=None, weights_only=not settings.ALLOW_PICKLE
 ):
@@ -129,7 +143,7 @@ def load_experiment(
     else:
         ckpt = exper
     logger.info(f"Loading checkpoint {ckpt.name}")
-    ckpt = torch.load(str(ckpt), map_location="cpu", weights_only=weights_only)
+    ckpt = load_checkpoint(ckpt, weights_only=weights_only, map_location="cpu")
 
     loaded_conf = OmegaConf.create(ckpt["conf"])
     OmegaConf.set_struct(loaded_conf, False)
@@ -140,10 +154,11 @@ def load_experiment(
     dict_params = set(state_dict.keys())
     model_params = set(map(lambda n: n[0], model.named_parameters()))
     diff = model_params - dict_params
-    if len(diff) > 0:
-        subs = os.path.commonprefix(list(diff)).rstrip(".")
-        logger.warning(f"Missing {len(diff)} parameters in {subs}")
-    model.load_state_dict(state_dict, strict=False)
+    logger.warning(f"Missing {len(diff)} / {len(model_params)} parameters.")
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    logger.info(
+        f"Model state loaded. Missing keys: {missing or 'None'}. Unexpected keys: {unexpected or 'None'}."
+    )
     return model
 
 
