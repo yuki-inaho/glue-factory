@@ -135,13 +135,16 @@ def plot_image_grid(
     figsize = [sum(ratios) * figs, nr * figs]
     if fig is None:
         fig, axs = plt.subplots(
-            nr, n, figsize=figsize, dpi=dpi, gridspec_kw={"width_ratios": ratios}
+            nr,
+            n,
+            figsize=figsize,
+            dpi=dpi,
+            gridspec_kw={"width_ratios": ratios},
+            squeeze=False,
         )
     else:
         axs = fig.subplots(nr, n, gridspec_kw={"width_ratios": ratios})
         fig.figure.set_size_inches(figsize)
-    if nr == 1:
-        axs = [axs]
 
     for j in range(nr):
         for i in range(n):

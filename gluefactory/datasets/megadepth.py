@@ -103,13 +103,10 @@ class MegaDepth(base_dataset.BaseDataset):
         seed = self.conf.seed
         if split == "train":
             seed = seed + epoch
-        if self.conf.views == 3:
-            return _TripletDataset(self.conf, split, seed=seed)
-        else:
-            return _PairDataset(self.conf, split, seed=seed)
+        return _MegaDepthSplit(self.conf, split, seed=seed)
 
 
-class _PairDataset(torch.utils.data.Dataset):
+class _MegaDepthSplit(torch.utils.data.Dataset):
     def __init__(self, conf, split, load_sample=True, seed: int | None = None):
         self.root = settings.DATA_PATH / conf.data_dir
         assert self.root.exists(), self.root
@@ -175,18 +172,18 @@ class _PairDataset(torch.utils.data.Dataset):
             # Fixed validation or test pairs
             assert num_pos is None
             assert num_neg is None
-            assert self.conf.views == 2
             pairs_path = scene_lists_path / self.conf[split + "_pairs"]
             for line in pairs_path.read_text().rstrip("\n").split("\n"):
-                im0, im1 = line.split(" ")
-                scene = im0.split("/")[0]
-                assert im1.split("/")[0] == scene
-                im0, im1 = [self.conf.image_subpath + im for im in [im0, im1]]
-                assert im0 in self.images[scene]
-                assert im1 in self.images[scene]
-                idx0 = np.where(self.images[scene] == im0)[0][0]
-                idx1 = np.where(self.images[scene] == im1)[0][0]
-                self.items.append((scene, idx0, idx1, 1.0))
+                imnames = line.split(" ")
+                scene = imnames[0].split("/")[0]
+                idxs = []
+                for imname in imnames:
+                    assert imname.split("/")[0] == scene
+                    impath = self.conf.image_subpath + imname
+                    assert impath in self.images[scene], (impath, scene)
+                    idx = np.where(self.images[scene] == impath)[0][0]
+                    idxs.append(idx)
+                return self.items.append((scene, idxs, 1.0))
         elif self.conf.views == 1:
             for scene in self.scenes:
                 if scene not in self.images:
@@ -199,70 +196,131 @@ class _PairDataset(torch.utils.data.Dataset):
                     ids = np.random.RandomState(seed).choice(
                         ids, num_pos, replace=False
                     )
-                ids = [(scene, i) for i in ids]
+                ids = [(scene, (i,), None) for i in ids]
                 self.items.extend(ids)
         else:
-            for scene in tqdm(
-                self.scenes,
-                desc="Sampling pairs",
-                disable=not self.conf.get("use_pbar", True),
-            ):
-                path = self.info_dir / (scene + ".npz")
-                assert path.exists(), path
-                info = np.load(str(path), allow_pickle=True)
-                valid = (self.images[scene] != None) & (  # noqa: E711
-                    self.depths[scene] != None  # noqa: E711
+            logger.info("Sampling new %s data with seed %d.", self.split, seed)
+            for i, scene in enumerate(
+                tqdm(
+                    sorted(self.scenes),
+                    desc="Sampling groups",
+                    disable=not self.conf.get("use_pbar", True),
                 )
-                ind = np.where(valid)[0]
-                mat = info["overlap_matrix"][valid][:, valid]
+            ):
+                self.sample_groups(seed + i, scene, num_pos, num_neg)
 
-                if num_pos is not None:
-                    # Sample a subset of pairs, binned by overlap.
-                    num_bins = self.conf.num_overlap_bins
-                    assert num_bins > 0
-                    bin_width = (
-                        self.conf.max_overlap - self.conf.min_overlap
-                    ) / num_bins
-                    num_per_bin = num_pos // num_bins
-                    pairs_all = []
-                    for k in range(num_bins):
-                        bin_min = self.conf.min_overlap + k * bin_width
-                        bin_max = bin_min + bin_width
-                        pairs_bin = (mat > bin_min) & (mat <= bin_max)
-                        pairs_bin = np.stack(np.where(pairs_bin), -1)
-                        pairs_all.append(pairs_bin)
-                    # Skip bins with too few samples
-                    has_enough_samples = [len(p) >= num_per_bin * 2 for p in pairs_all]
-                    num_per_bin_2 = num_pos // max(1, sum(has_enough_samples))
-                    pairs = []
-                    for pairs_bin, keep in zip(pairs_all, has_enough_samples):
-                        if keep:
-                            pairs.append(sample_n(pairs_bin, num_per_bin_2, seed))
-                    if len(pairs) == 0:
-                        logger.warning(
-                            "No pairs found for scene %s with overlap in [%.2f, %.2f].",
-                            scene,
-                            self.conf.min_overlap,
-                            self.conf.max_overlap,
-                        )
-                        continue
-                    pairs = np.concatenate(pairs, 0)
-                else:
-                    pairs = (mat > self.conf.min_overlap) & (
-                        mat <= self.conf.max_overlap
-                    )
-                    pairs = np.stack(np.where(pairs), -1)
-
-                pairs = [(scene, ind[i], ind[j], mat[i, j]) for i, j in pairs]
-                if num_neg is not None:
-                    neg_pairs = np.stack(np.where(mat <= 0.0), -1)
-                    neg_pairs = sample_n(neg_pairs, num_neg, seed)
-                    pairs += [(scene, ind[i], ind[j], mat[i, j]) for i, j in neg_pairs]
-                self.items.extend(pairs)
-        if self.conf.views == 2 and self.conf.sort_by_overlap:
-            self.items.sort(key=lambda i: i[-1], reverse=True)
+        if self.conf.sort_by_overlap:
+            self.items.sort(key=lambda i: np.mean(i[-1]), reverse=True)
         else:
             np.random.RandomState(seed).shuffle(self.items)
+
+    def sample_groups(self, seed, scene, num_pos, num_neg):
+        if self.conf.views == 2:
+            return self.sample_pairs(seed, scene, num_pos, num_neg)
+        elif self.conf.views == 3:
+            return self.sample_triplets(seed, scene, num_pos, num_neg)
+        else:
+            raise ValueError(self.conf.views)
+
+    def sample_pairs(self, seed, scene, num_pos, num_neg):
+        path = self.info_dir / (scene + ".npz")
+        assert path.exists(), path
+        info = np.load(str(path), allow_pickle=True)
+        valid = (self.images[scene] != None) & (  # noqa: E711
+            self.depths[scene] != None  # noqa: E711
+        )
+        ind = np.where(valid)[0]
+        mat = info["overlap_matrix"][valid][:, valid]
+
+        if num_pos is not None:
+            # Sample a subset of pairs, binned by overlap.
+            num_bins = self.conf.num_overlap_bins
+            assert num_bins > 0
+            bin_width = (self.conf.max_overlap - self.conf.min_overlap) / num_bins
+            num_per_bin = num_pos // num_bins
+            pairs_all = []
+            for k in range(num_bins):
+                bin_min = self.conf.min_overlap + k * bin_width
+                bin_max = bin_min + bin_width
+                pairs_bin = (mat > bin_min) & (mat <= bin_max)
+                pairs_bin = np.stack(np.where(pairs_bin), -1)
+                pairs_all.append(pairs_bin)
+            # Skip bins with too few samples
+            has_enough_samples = [len(p) >= num_per_bin * 2 for p in pairs_all]
+            num_per_bin_2 = num_pos // max(1, sum(has_enough_samples))
+            pairs = []
+            for pairs_bin, keep in zip(pairs_all, has_enough_samples):
+                if keep:
+                    pairs.append(sample_n(pairs_bin, num_per_bin_2, seed))
+            if len(pairs) == 0:
+                logger.warning(
+                    "No pairs found for scene %s with overlap in [%.2f, %.2f].",
+                    scene,
+                    self.conf.min_overlap,
+                    self.conf.max_overlap,
+                )
+                return
+            pairs = np.concatenate(pairs, 0)
+        else:
+            pairs = (mat > self.conf.min_overlap) & (mat <= self.conf.max_overlap)
+            pairs = np.stack(np.where(pairs), -1)
+
+        pairs = [(scene, (ind[i], ind[j]), mat[[i, j]][:, [i, j]]) for i, j in pairs]
+        if num_neg is not None:
+            neg_pairs = np.stack(np.where(mat <= 0.0), -1)
+            neg_pairs = sample_n(neg_pairs, num_neg, seed)
+            pairs += [(scene, (ind[i], ind[j]), 0.0) for i, j in neg_pairs]
+        self.items.extend(pairs)
+
+    def sample_triplets(self, seed, scene, num_pos, num_neg):
+        path = self.info_dir / (scene + ".npz")
+        assert path.exists(), path
+        info = np.load(str(path), allow_pickle=True)
+        if self.conf.num_overlap_bins > 1:
+            raise NotImplementedError("TODO")
+        valid = (self.images[scene] != None) & (  # noqa: E711
+            self.depths[scene] != None  # noqa: E711
+        )
+        ind = np.where(valid)[0]
+        mat = info["overlap_matrix"][valid][:, valid]
+        good = (mat > self.conf.min_overlap) & (mat <= self.conf.max_overlap)
+        triplets = []
+        if self.conf.triplet_enforce_overlap:
+            pairs = np.stack(np.where(good), -1)
+            for i0, i1 in pairs:
+                for i2 in pairs[pairs[:, 0] == i0, 1]:
+                    if good[i1, i2]:
+                        triplets.append((i0, i1, i2))
+            if len(triplets) > num_pos:
+                selected = np.random.RandomState(seed).choice(
+                    len(triplets), num_pos, replace=False
+                )
+                selected = range(num_pos)
+                triplets = np.array(triplets)[selected]
+        else:
+            # we first enforce that each row has >1 pairs
+            non_unique = good.sum(-1) > 1
+            ind_r = np.where(non_unique)[0]
+            good = good[non_unique]
+            pairs = np.stack(np.where(good), -1)
+            if num_pos is not None and len(pairs) > num_pos:
+                selected = np.random.RandomState(seed).choice(
+                    len(pairs), num_pos, replace=False
+                )
+                pairs = pairs[selected]
+            for idx, (k, i) in enumerate(pairs):
+                # We now sample a j from row k s.t. i != j
+                possible_j = np.where(good[k])[0]
+                possible_j = possible_j[possible_j != i]
+                selected = np.random.RandomState(seed + idx).choice(
+                    len(possible_j), 1, replace=False
+                )[0]
+                triplets.append((ind_r[k], i, possible_j[selected]))
+            triplets = [
+                (scene, (ind[k], ind[i], ind[j]), mat[[k, i, j]][:, [k, i, j]])
+                for k, i, j in triplets
+            ]
+            self.items.extend(triplets)
 
     def _read_view(self, scene, idx):
         path = self.root / self.images[scene][idx]
@@ -354,129 +412,35 @@ class _PairDataset(torch.utils.data.Dataset):
             return self.getitem(idx)
 
     def getitem(self, idx):
-        if self.conf.views == 2:
-            if isinstance(idx, list):
-                scene, idx0, idx1, overlap = idx
-            else:
-                scene, idx0, idx1, overlap = self.items[idx]
-            data0 = self._read_view(scene, idx0)
-            data1 = self._read_view(scene, idx1)
-            data = {
-                "view0": data0,
-                "view1": data1,
-            }
-            data["T_0to1"] = data1["T_w2cam"] @ data0["T_w2cam"].inv()
-            data["T_1to0"] = data0["T_w2cam"] @ data1["T_w2cam"].inv()
-            data["overlap_0to1"] = overlap
-            data["name"] = f"{scene}/{data0['name']}_{data1['name']}"
+        if isinstance(idx, list):
+            scene, idxs, overlap = idx
         else:
-            assert self.conf.views == 1
-            scene, idx0 = self.items[idx]
-            data = self._read_view(scene, idx0)
+            scene, idxs, overlap = self.items[idx]
+
+        views = [self._read_view(scene, i) for i in idxs]
+        nviews = len(views)
+        data = {f"view{i}": view for i, view in enumerate(views)}
+
+        for k in range(nviews):
+            for l in range(k + 1, nviews):
+                data[f"T_{k}to{l}"] = views[l]["T_w2cam"] @ views[k]["T_w2cam"].inv()
+                data[f"T_{l}to{k}"] = views[k]["T_w2cam"] @ views[l]["T_w2cam"].inv()
+                if isinstance(overlap, np.ndarray):
+                    data[f"overlap_{k}to{l}"] = overlap[k, l]
+                    data[f"overlap_{l}to{k}"] = overlap[k, l]
+                elif isinstance(overlap, (float, int)):
+                    data[f"overlap_{k}to{l}"] = overlap
+                    data[f"overlap_{l}to{k}"] = overlap
+        data["name"] = f"{scene}/{'_'.join([v['name'] for v in views])}"
+
+        if nviews == 1 and self.conf.get("squeeze_single_view", False):
+            data = {**data.pop("view0"), **data}
         data["scene"] = scene
         data["idx"] = idx
         return data
 
     def __len__(self):
         return len(self.items)
-
-
-class _TripletDataset(_PairDataset):
-    def sample_new_items(self, seed):
-        logging.info("Sampling new triplets with seed %d", seed)
-        self.items = []
-        split = self.split
-        num = self.conf[self.split + "_num_per_scene"]
-        if split != "train" and self.conf[split + "_pairs"] is not None:
-            if Path(self.conf[split + "_pairs"]).exists():
-                pairs_path = Path(self.conf[split + "_pairs"])
-            else:
-                pairs_path = (
-                    settings.DATA_PATH / "configs" / self.conf[split + "_pairs"]
-                )
-            for line in pairs_path.read_text().rstrip("\n").split("\n"):
-                im0, im1, im2 = line.split(" ")
-                assert im0[:4] == im1[:4]
-                scene = im1[:4]
-                idx0 = np.where(self.images[scene] == im0)
-                idx1 = np.where(self.images[scene] == im1)
-                idx2 = np.where(self.images[scene] == im2)
-                self.items.append((scene, idx0, idx1, idx2, 1.0, 1.0, 1.0))
-        else:
-            for scene in self.scenes:
-                path = self.info_dir / (scene + ".npz")
-                assert path.exists(), path
-                info = np.load(str(path), allow_pickle=True)
-                if self.conf.num_overlap_bins > 1:
-                    raise NotImplementedError("TODO")
-                valid = (self.images[scene] != None) & (  # noqa: E711
-                    self.depth[scene] != None  # noqa: E711
-                )
-                ind = np.where(valid)[0]
-                mat = info["overlap_matrix"][valid][:, valid]
-                good = (mat > self.conf.min_overlap) & (mat <= self.conf.max_overlap)
-                triplets = []
-                if self.conf.triplet_enforce_overlap:
-                    pairs = np.stack(np.where(good), -1)
-                    for i0, i1 in pairs:
-                        for i2 in pairs[pairs[:, 0] == i0, 1]:
-                            if good[i1, i2]:
-                                triplets.append((i0, i1, i2))
-                    if len(triplets) > num:
-                        selected = np.random.RandomState(seed).choice(
-                            len(triplets), num, replace=False
-                        )
-                        selected = range(num)
-                        triplets = np.array(triplets)[selected]
-                else:
-                    # we first enforce that each row has >1 pairs
-                    non_unique = good.sum(-1) > 1
-                    ind_r = np.where(non_unique)[0]
-                    good = good[non_unique]
-                    pairs = np.stack(np.where(good), -1)
-                    if len(pairs) > num:
-                        selected = np.random.RandomState(seed).choice(
-                            len(pairs), num, replace=False
-                        )
-                        pairs = pairs[selected]
-                    for idx, (k, i) in enumerate(pairs):
-                        # We now sample a j from row k s.t. i != j
-                        possible_j = np.where(good[k])[0]
-                        possible_j = possible_j[possible_j != i]
-                        selected = np.random.RandomState(seed + idx).choice(
-                            len(possible_j), 1, replace=False
-                        )[0]
-                        triplets.append((ind_r[k], i, possible_j[selected]))
-                    triplets = [
-                        (scene, ind[k], ind[i], ind[j], mat[k, i], mat[k, j], mat[i, j])
-                        for k, i, j in triplets
-                    ]
-                    self.items.extend(triplets)
-        np.random.RandomState(seed).shuffle(self.items)
-
-    def __getitem__(self, idx):
-        scene, idx0, idx1, idx2, overlap01, overlap02, overlap12 = self.items[idx]
-        data0 = self._read_view(scene, idx0)
-        data1 = self._read_view(scene, idx1)
-        data2 = self._read_view(scene, idx2)
-        data = {
-            "view0": data0,
-            "view1": data1,
-            "view2": data2,
-        }
-        data["T_0to1"] = data1["T_w2cam"] @ data0["T_w2cam"].inv()
-        data["T_0to2"] = data2["T_w2cam"] @ data0["T_w2cam"].inv()
-        data["T_1to2"] = data2["T_w2cam"] @ data1["T_w2cam"].inv()
-        data["T_1to0"] = data0["T_w2cam"] @ data1["T_w2cam"].inv()
-        data["T_2to0"] = data0["T_w2cam"] @ data2["T_w2cam"].inv()
-        data["T_2to1"] = data1["T_w2cam"] @ data2["T_w2cam"].inv()
-
-        data["overlap_0to1"] = overlap01
-        data["overlap_0to2"] = overlap02
-        data["overlap_1to2"] = overlap12
-        data["scene"] = scene
-        data["name"] = f"{scene}/{data0['name']}_{data1['name']}_{data2['name']}"
-        return data
 
     def __len__(self):
         return len(self.items)
@@ -493,7 +457,6 @@ def visualize(args):
         "num_workers": 0,
         "prefetch_factor": None,
         "val_num_per_scene": None,
-        # "depth_subpath": "depth_processed/",
     }
     from ..visualization import viz2d
 
@@ -519,7 +482,6 @@ def visualize(args):
             depths.append(
                 [data[f"view{i}"]["depth"][0] for i in range(dataset.conf.views)]
             )
-
     axes = viz2d.plot_image_grid(images, dpi=args.dpi)
     for i in range(len(images)):
         viz2d.plot_heatmaps(depths[i], axes=axes[i])
