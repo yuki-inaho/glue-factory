@@ -602,9 +602,11 @@ class Trainer:
             self.step_timer.measure("loss_fn")
 
             if torch.isnan(loss).any():
+                if not self.conf.get("allow_nan", False):
+                    raise RuntimeError("NaN detected in training.")
                 logger.warning("Detected NAN, skipping iteration..")
                 del pred, data, loss, losses
-                return
+                return None, None
 
             do_backward = loss.requires_grad
             if self.distributed:
@@ -693,6 +695,8 @@ class Trainer:
             # Perform gradient accumulation
             do_update = ((it + 1) % self.conf.gradient_accumulation_steps) == 0
             pred, loss_metrics = self.train_step(data, do_update=do_update)
+            if pred is None:
+                continue  # skip iteration due to NaN
             for k, val in loss_metrics.items():
                 train_loss_metrics[k].update(val)
 
