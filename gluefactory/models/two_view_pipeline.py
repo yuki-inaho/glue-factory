@@ -9,6 +9,7 @@ Convention for the matches: m0[i] is the index of the keypoint in image 1
 that corresponds to the keypoint i in image 0. m0[i] = -1 if i is unmatched.
 """
 
+import torch
 from omegaconf import OmegaConf
 
 from ..utils import misc
@@ -117,8 +118,11 @@ class TwoViewPipeline(BaseModel):
                     continue
                 losses = {**losses, **losses_}
                 metrics = {**metrics, **metrics_}
-                total = losses_["total"] + total
-        return {**losses, "total": total}, metrics
+                if "total" in losses_:
+                    total = losses_["total"] + total
+        if isinstance(total, torch.Tensor):
+            losses["total"] = total
+        return losses, metrics
 
     def visualize(self, pred, data, **kwargs):
         """Visualize the matches."""
