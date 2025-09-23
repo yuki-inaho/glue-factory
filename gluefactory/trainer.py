@@ -490,7 +490,14 @@ class Trainer:
         writer.add_scalar("l2/param_norm", misc.param_norm(all_params), tot_n_samples)
         writer.add_scalar("l2/grad_norm", misc.grad_norm(all_params), tot_n_samples)
         loss_metrics = {k: v.compute() for k, v in train_loss_metrics.items()}
-        str_loss_metrics = [f"{k} {v:.3E}" for k, v in loss_metrics.items()]
+        if self.conf.stdout_metrics is None:
+            str_loss_metrics = [f"{k} {v:.3E}" for k, v in loss_metrics.items()]
+        else:
+            str_loss_metrics = [
+                f"{k} {v:.3E}"
+                for k, v in loss_metrics.items()
+                if k in self.conf.stdout_metrics
+            ]
         # Write training losses
         logger.info(
             "[E {} | it {}] {} loss {{{}}}".format(
