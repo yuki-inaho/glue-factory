@@ -61,6 +61,7 @@ class MegaDepth(base_dataset.BaseDataset):
         "read_depth": True,
         "read_image": True,
         "grayscale": False,
+        "allow_distractors": False,
         "preprocessing": preprocess.ImagePreprocessor.default_conf,
         "p_rotate": 0.0,  # probability to rotate image by +/- 90°
         "reseed": False,
@@ -323,6 +324,12 @@ class _MegaDepthSplit(torch.utils.data.Dataset):
             self.items.extend(triplets)
 
     def _read_view(self, scene, idx):
+        if idx is None and self.conf.allow_distractors:
+            scenes = list(set(self.scenes) - {scene})
+            scene = np.random.choice(scenes).item()
+            valid = self.images[scene] != None
+            idx = np.random.choice(len(self.images[scene]), p=valid / valid.sum())
+            print(scene, idx)
         path = self.root / self.images[scene][idx]
 
         # read pose data
@@ -416,7 +423,6 @@ class _MegaDepthSplit(torch.utils.data.Dataset):
             scene, idxs, overlap = idx
         else:
             scene, idxs, overlap = self.items[idx]
-
         views = [self._read_view(scene, i) for i in idxs]
         nviews = len(views)
         data = {f"view{i}": view for i, view in enumerate(views)}
@@ -432,6 +438,9 @@ class _MegaDepthSplit(torch.utils.data.Dataset):
                     data[f"overlap_{k}to{l}"] = overlap
                     data[f"overlap_{l}to{k}"] = overlap
         data["name"] = f"{scene}/{'_'.join([v['name'] for v in views])}"
+
+        if overlap is not None:
+            data["overlap"] = overlap
 
         if nviews == 1 and self.conf.get("squeeze_single_view", False):
             data = {**data.pop("view0"), **data}
