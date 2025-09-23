@@ -382,7 +382,7 @@ def build_heatmap(img, patches, corners):
 
 def get_image_coords(img):
     h, w = img.shape[-2:]
-    return (
+    coords = (
         torch.stack(
             torch.meshgrid(
                 torch.arange(h, dtype=torch.float32, device=img.device),
@@ -391,7 +391,19 @@ def get_image_coords(img):
             )[::-1],
             dim=0,
         ).permute(1, 2, 0)
-    )[None] + 0.5
+    ) + 0.5
+    return coords[None]
+
+
+def masked_mean(
+    tensor: torch.Tensor,
+    mask: torch.BoolTensor,
+    dim: int | None = None,
+    keepdim: bool = False,
+) -> torch.Tensor:
+    sum_tensor = torch.where(mask, tensor, 0.0).sum(dim=dim, keepdim=keepdim)
+    count = mask.sum(dim=dim, keepdim=keepdim).clamp_min(1e-6)
+    return sum_tensor / count
 
 
 def grid_sample(

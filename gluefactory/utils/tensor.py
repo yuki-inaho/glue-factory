@@ -39,7 +39,7 @@ def autovmap(func):
     def wrap(self, arg):
         assert isinstance(self, TensorWrapper)
         cls = self.__class__
-        _wrap = lambda d, x: func(cls(d), x)
+        _wrap = lambda d, x: wrap(cls(d), x)
         if arg.ndim == self._data.ndim and arg.ndim == 1:
             return func(self, arg)
         elif (
