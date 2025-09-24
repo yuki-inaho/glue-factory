@@ -177,7 +177,7 @@ class BaseDataset(metaclass=ABCMeta):
         return dummy_batch
 
     def get_data_loader(
-        self, split, shuffle=None, pinned=False, distributed=False, epoch: int = 0
+        self, split, shuffle=None, pinned=True, distributed=False, epoch: int = 0
     ):
         """Return a data loader for a given split."""
         assert split in ["train", "val", "test"]
