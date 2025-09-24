@@ -539,7 +539,7 @@ def features_to_RGB(*Fs, skip: int = 1, norm: bool = False, offset: int = 0):
     from sklearn.decomposition import PCA
 
     if isinstance(Fs[0], torch.Tensor):
-        Fs = [F.detach().cpu().numpy()[0] for F in Fs]
+        Fs = [F.detach().cpu().numpy() for F in Fs]
 
     def normalize(x):
         if norm:
