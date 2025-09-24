@@ -64,7 +64,7 @@ class MixedExtractor(BaseModel):
             pred = self.detector(data)
         else:
             pred = data["cache"]
-        if self.conf.detector.name:
+        if self.conf.descriptor.name:
             pred = {**pred, **self.descriptor({**pred, **data})}
 
         if self.interpolate_descriptors_from:
@@ -114,3 +114,12 @@ class MixedExtractor(BaseModel):
                 metrics = {**metrics, **metrics_}
                 total = losses_["total"] + total
         return {**losses, "total": total}, metrics
+
+    def compile(self, *args, **kwargs) -> BaseModel:
+        if self.conf.compile:
+            return super().compile(*args, **kwargs)
+
+        for k in ["detector", "descriptor"]:
+            if self.conf[k].name:
+                setattr(self, k, getattr(self, k).compile(*args, **kwargs))
+        return self

@@ -2,6 +2,7 @@
 Base class for trainable models.
 """
 
+import logging
 from abc import ABCMeta, abstractmethod
 from copy import copy
 
@@ -9,6 +10,8 @@ import omegaconf
 import torch
 from omegaconf import OmegaConf
 from torch import nn
+
+logger = logging.getLogger(__name__)
 
 
 class MetaModel(ABCMeta):
@@ -58,6 +61,7 @@ class BaseModel(nn.Module, metaclass=MetaModel):
         "freeze_batch_normalization": False,  # use test-time statistics
         "timeit": False,  # time forward pass
         "visualize": True,  # visualize model predictions
+        "compile": True,  # compile the model for faster inference
         "compile_loss": True,  # compile losses for faster inference
     }
     required_data_keys = []
@@ -179,7 +183,9 @@ class BaseModel(nn.Module, metaclass=MetaModel):
 
     def compile(self, *args, **kwargs) -> "BaseModel":
         """Compile the model for faster inference."""
-        super().compile(*args, **kwargs)
+        if self.conf.compile:
+            logger.info("Compiling %s", str(type(self)))
+            super().compile(*args, **kwargs)
         if self.conf.compile_loss:
             self.loss = torch.compile(self.loss, *args, **kwargs)
         return self

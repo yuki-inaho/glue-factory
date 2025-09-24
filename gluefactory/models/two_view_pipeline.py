@@ -139,3 +139,11 @@ class TwoViewPipeline(BaseModel):
             if self.conf[k].name and hasattr(getattr(self, k), "pr_metrics"):
                 pr_metrics.update(getattr(self, k).pr_metrics(pred, data))
         return pr_metrics
+
+    def compile(self, *args, **kwargs) -> BaseModel:
+        if self.conf.compile:
+            return super().compile(*args, **kwargs)
+        for k in self.components:
+            if self.conf[k].name:
+                setattr(self, k, getattr(self, k).compile(*args, **kwargs))
+        return self
