@@ -478,6 +478,18 @@ class Trainer:
         """Get the current iteration identifier."""
         return self.tot_it if self.conf.log_it else self.tot_n_samples
 
+    def record_memory(self, output_dir: Path, it: int, offset: int = 2):
+        if it == offset:
+            self.info(
+                f"Recording memory usage over {self.conf.record_memory} iterations "
+                f"(skipped first {offset} it)."
+            )
+            torch.cuda.memory._record_memory_history(enabled="all")
+        elif it == offset + self.conf.record_memory:
+            # Record memory usage every self.conf.record_memory iterations
+            snapshot_path = output_dir / f"memory_snapshot.json"
+            torch.cuda.memory._dump_snapshot(snapshot_path)
+
     def log_train(
         self,
         writer: Writer,
