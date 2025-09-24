@@ -1,4 +1,5 @@
 import math
+import pprint
 from collections.abc import MutableMapping
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
@@ -58,10 +59,7 @@ def param_norm(params):
 
 def rbd(data: dict) -> dict:
     """Remove batch dimension from elements in data"""
-    return {
-        k: v[0] if isinstance(v, (torch.Tensor, np.ndarray, list)) else v
-        for k, v in data.items()
-    }
+    return tree_map(data, lambda t: t[0])
 
 
 def add_prefix(d: dict, prefix: str) -> dict:
@@ -129,6 +127,10 @@ def iterelements(data: dict, pattern="view") -> Iterable[Any]:
 
 def pack_elements(data, pattern="view"):
     return pack_tree(iterelements(data, pattern=pattern))
+
+
+def concat_elements(data, pattern="view"):
+    return concat_tree(iterelements(data, pattern=pattern))
 
 
 def pack_tree(
@@ -251,6 +253,43 @@ def flat_map(
     if unflatten:
         out = unflatten_dict(out, sep=sep)
     return out
+
+
+def tree_map(
+    input_: types.Tree,
+    func: Callable[[types.Value], types.Value],
+    sep: str | None = None,
+    unflatten: bool = True,
+) -> types.Tree:
+    """Apply a function to each item in a flattened dictionary."""
+    return flat_map(input_, func=lambda k, v: func(v), sep=sep, unflatten=unflatten)
+
+
+def tree_summary(tree: types.Tree, flatten: bool = False) -> str:
+    """Summarize a tree structure."""
+
+    def _summarize(t):
+        if isinstance(t, torch.Tensor):
+            return f"{type(t).__name__}{tuple(t.shape)} {t.dtype}"
+        elif isinstance(t, tensor.TensorWrapper):
+            return f"{type(t).__name__}{tuple(t.shape)} {t.dtype}"
+        elif isinstance(t, np.ndarray):
+            return f"ndarray{t.shape} {t.dtype}"
+        elif isinstance(t, (list, tuple)):
+            return f"{type(t).__name__}[{len(t)}]"
+        elif isinstance(t, int, str, bytes, float, bool):
+            return str(t)
+        elif t is None:
+            return "None"
+        else:
+            return type(t).__name__
+
+    return pprint.pformat(
+        tree_map(
+            tree, _summarize, unflatten=not flatten, sep=("." if flatten else None)
+        ),
+        indent=2,
+    )
 
 
 def to_sequence(map):
