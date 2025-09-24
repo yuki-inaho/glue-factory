@@ -184,7 +184,7 @@ class _MegaDepthSplit(torch.utils.data.Dataset):
                     assert impath in self.images[scene], (impath, scene)
                     idx = np.where(self.images[scene] == impath)[0][0]
                     idxs.append(idx)
-                return self.items.append((scene, idxs, 1.0))
+                self.items.append((scene, idxs, 1.0))
         elif self.conf.views == 1:
             for scene in self.scenes:
                 if scene not in self.images:
