@@ -1,5 +1,7 @@
+import functools
 import math
 import pprint
+from ast import arg
 from collections.abc import MutableMapping
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
@@ -9,6 +11,37 @@ import torch.multiprocessing as tmp
 import torch.nn.functional as F
 
 from . import tensor, types
+
+# ----------------------------------------------------------------------------
+# Wrappers
+# ----------------------------------------------------------------------------
+
+
+# Hacky workaround for torch.amp.custom_fwd to support older versions of PyTorch.
+AMP_CUSTOM_FWD_F32 = (
+    torch.amp.custom_fwd(cast_inputs=torch.float32, device_type="cuda")
+    if hasattr(torch.amp, "custom_fwd")
+    else torch.cuda.amp.custom_fwd(cast_inputs=torch.float32)
+)
+
+
+def filter_batch_for_jit(
+    fn: Callable[[Any], Any], exclude_cls: Sequence[Any] = (list, tuple, str, bytes)
+) -> Callable[[Any], Any]:
+    # Remove non-tensor entries from a batch for JIT compatibility
+    def is_valid(key: Any, arg: Any) -> bool:
+        return not isinstance(arg, exclude_cls)
+
+    @functools.wraps(fn)
+    def wrapper(*args):
+        return fn(
+            *(
+                filter_tree(arg, is_valid) if isinstance(arg, (dict, Mapping)) else arg
+                for arg in args
+            )
+        )
+
+    return wrapper
 
 
 def map_tensor(input_, func):
@@ -253,6 +286,17 @@ def flat_map(
     if unflatten:
         out = unflatten_dict(out, sep=sep)
     return out
+
+
+def filter_tree(
+    input_: types.Tree | Any,
+    valid_fn: Callable[[types.Key, types.Value], bool],
+    sep: str | None = None,
+) -> types.Tree:
+    """Filter a tree structure based on a predicate function."""
+    flat_dict = flatten_dict(input_, sep=sep)
+    filtered = {k: v for k, v in flat_dict.items() if valid_fn(k, v)}
+    return unflatten_dict(filtered, sep=sep)
 
 
 def tree_map(

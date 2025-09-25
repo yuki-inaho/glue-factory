@@ -1,14 +1,6 @@
-import torch
-
 from ...geometry import gt_generation
+from ...utils import misc
 from ..base_model import BaseModel
-
-# Hacky workaround for torch.amp.custom_fwd to support older versions of PyTorch.
-AMP_CUSTOM_FWD_F32 = (
-    torch.amp.custom_fwd(cast_inputs=torch.float32, device_type="cuda")
-    if hasattr(torch.amp, "custom_fwd")
-    else torch.cuda.amp.custom_fwd(cast_inputs=torch.float32)
-)
 
 
 class DepthMatcher(BaseModel):
@@ -41,7 +33,8 @@ class DepthMatcher(BaseModel):
                 "valid_lines1",
             ]
 
-    @AMP_CUSTOM_FWD_F32
+    @misc.filter_batch_for_jit
+    @misc.AMP_CUSTOM_FWD_F32
     def _forward(self, data):
         result = {}
         if self.conf.use_points:
