@@ -101,7 +101,7 @@ def main_worker(rank, conf, output_dir, args):
         device = init_process(output_dir, rank, conf.train.num_devices)
     if rank == 0:
         with stdout_capturing.capture_outputs(
-            output_dir / "log.txt", cleanup_interval=args.cleanup_interval
+            output_dir / "log.log", cleanup_interval=args.cleanup_interval
         ):
             res = trainer.launch_training(output_dir, conf, device)
     else:
