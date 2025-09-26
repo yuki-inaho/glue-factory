@@ -13,15 +13,15 @@ import numpy as np
 import torch
 import torch.distributed as dist
 from omegaconf import DictConfig, OmegaConf
-from pycolmap import logging
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from gluefactory import datasets, models
 from gluefactory.models import BaseModel
 from gluefactory.utils import experiments, misc, tools
+from gluefactory.utils.summary_writer import SummaryWriter
 
-from . import eval, logger, settings
+from . import __module_name__, eval, logger, settings
 
 Args: TypeAlias = DictConfig
 Batch: TypeAlias = Any
@@ -161,6 +161,8 @@ class Trainer:
         "gradient_accumulation_steps": 1,  # Accumulate gradients over N steps
         "ddp_find_unused_parameters": False,  # DDP find_unused_parameters
         "run_benchmarks": (),
+        "writer": "tensorboard",  # options: [tensorboard, wandb]
+        "project_name": __module_name__,  # wandb project name
     }
 
     def __init__(
@@ -470,9 +472,14 @@ class Trainer:
 
         return use_mp
 
-    def get_writer(self, output_dir: Path):
+    def get_writer(self, output_dir: Path, log_conf: DictConfig) -> Writer:
         if self.rank == 0:
-            writer = SummaryWriter(log_dir=str(output_dir))
+            writer = SummaryWriter(
+                log_dir=output_dir,
+                writer=self.conf.writer,
+                project=self.conf.project_name,
+                conf=log_conf,
+            )
         else:
             writer = None
         return writer
@@ -547,6 +554,7 @@ class Trainer:
     def log_time_and_memory(
         self,
         writer: Writer,
+        it: int,
         batch_size: int,
     ) -> str:
         tot_n_samples = self.current_it
@@ -571,12 +579,13 @@ class Trainer:
                 tot_n_samples,
             )
 
-            writer.add_figure(
-                "step/sections",
-                self.step_timer.plot(),
-                tot_n_samples,
-                close=True,
-            )
+            if it % (self.conf.log_every_iter * 2) == 0:
+                # Plot at reduced frequency
+                writer.add_figure(
+                    "step/sections",
+                    self.step_timer.plot(),
+                    tot_n_samples,
+                )
 
         # Reset the stats after logging
         self.step_timer.stats.clear()
@@ -738,7 +747,7 @@ class Trainer:
             # Log training metrics (loss, ...) and hardware usage
             if (it % self.conf.log_every_iter == 0) and self.rank == 0:
                 time_and_mem_str = self.log_time_and_memory(
-                    writer, dataloader.batch_size
+                    writer, it, dataloader.batch_size
                 )
                 self.log_train(
                     writer, it, train_loss_metrics, extra_str=time_and_mem_str
@@ -830,14 +839,15 @@ class Trainer:
         self,
         output_dir: Path,
         dataset: datasets.BaseDataset,
+        writer: Writer = None,
     ):
         """The main function."""
         # Initialize writer
-        writer = self.get_writer(output_dir)
-
         full_conf = OmegaConf.create(
             {"data": dataset.conf, "model": self.model_conf, "train": self.conf}
         )
+        if writer is None:
+            writer = self.get_writer(output_dir, full_conf)
 
         for bench_name, (bench_conf, _) in self.benchmarks.items():
             if self.rank == 0 and self.conf.get("eval_init", False):
@@ -859,7 +869,7 @@ class Trainer:
 
             # Create data loader
             train_loader = dataset.get_data_loader(
-                "train", distributed=self.distributed, epoch=self.epoch
+                "train", distributed=self.distributed, epoch=self.epoch, pinned=True
             )
             self.info(f"Training loader has {len(train_loader)} batches")
 
@@ -893,6 +903,9 @@ class Trainer:
                 self.test_loop(output_dir, bench_name, bench_conf, writer)
             if self.distributed:
                 dist.barrier()
+
+        if writer is not None:
+            writer.close()
 
 
 def scale_by_device_count(
@@ -936,6 +949,7 @@ def launch_training(output_dir: Path, conf: DictConfig, device: torch.device):
         del dummy_batch
         logger.info("Dummy forward pass completed.")
     trainer = Trainer.init(conf.train, model, device=device)
+
     # Register benchmarks (e.g. MegaDepth1500)
     for bench in conf.train.get("run_benchmarks", ()):
         bench_name, every_epoch = (bench, None) if isinstance(bench, str) else bench
