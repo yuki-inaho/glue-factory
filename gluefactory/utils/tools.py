@@ -518,7 +518,7 @@ def write_image_summaries(writer, name, figures, step):
                 writer.add_images(tag, fig_or_image, step)
         else:
             # Figure or list[Figure]
-            writer.add_figure(tag, fig_or_image, step, close=True)
+            writer.add_figure(tag, fig_or_image, step)
 
     if isinstance(figures, list):
         for i, figs in enumerate(figures):

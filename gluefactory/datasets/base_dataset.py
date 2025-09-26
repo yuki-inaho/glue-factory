@@ -158,12 +158,14 @@ class BaseDataset(metaclass=ABCMeta):
         raise NotImplementedError
 
     @functools.cache
-    def get_dummy_batch(self, split: str = "val", batch_size: int | None = 2, **kwargs):
+    def get_dummy_loader(
+        self, split: str = "val", batch_size: int | None = 2, **kwargs
+    ):
         # Return a dummy batch from the dataset
         if batch_size is None:
             batch_size = self.conf.get(split + "_batch_size", self.conf.batch_size)
         dataset = self.get_dataset(split)
-        loader = DataLoader(
+        return DataLoader(
             dataset,
             batch_size=batch_size,
             pin_memory=True,
@@ -172,15 +174,27 @@ class BaseDataset(metaclass=ABCMeta):
             collate_fn=collate,
             **kwargs,
         )
+
+    @functools.cache
+    def get_dummy_batch(self, split: str = "val", batch_size: int | None = 2, **kwargs):
+        loader = self.get_dummy_loader(split, batch_size=batch_size, **kwargs)
         dummy_batch = next(iter(loader))
         del loader
         return dummy_batch
 
     def get_data_loader(
-        self, split, shuffle=None, pinned=False, distributed=False, epoch: int = 0
+        self,
+        split,
+        shuffle=None,
+        pinned=False,
+        distributed=False,
+        epoch: int = 0,
+        overfit: bool = False,
     ):
         """Return a data loader for a given split."""
         assert split in ["train", "val", "test"]
+        if overfit:
+            return self.get_overfit_loader(split)
         dataset = self.get_dataset(split, epoch=epoch)
         try:
             batch_size = self.conf[split + "_batch_size"]
@@ -222,18 +236,24 @@ class BaseDataset(metaclass=ABCMeta):
         correlate well.
         """
         assert split in ["train", "val", "test"]
-        dataset = self.get_dataset("train")
-        sampler = LoopSampler(
-            self.conf.batch_size,
-            len(dataset) if split == "train" else self.conf.batch_size,
-        )
-        num_workers = self.conf.get("num_workers", self.conf.batch_size)
-        return DataLoader(
-            dataset,
-            batch_size=self.conf.batch_size,
-            pin_memory=True,
-            num_workers=num_workers,
-            sampler=sampler,
-            worker_init_fn=worker_init_fn,
-            collate_fn=collate,
-        )
+        with tools.fork_rng(self.conf.seed):
+            dummy_loader = self.get_dummy_loader("train", batch_size=None)
+
+            class DummyDataset(torch.utils.data.Dataset):
+                def __init__(self, dummy_loader):
+                    self.dummy_loader = dummy_loader
+                    self.batch = next(iter(dummy_loader))
+
+                def __len__(self):
+                    return len(self.dummy_loader) if split == "train" else 1
+
+                def __getitem__(self, idx):
+                    return self.batch
+
+            return DataLoader(
+                DummyDataset(dummy_loader),
+                batch_size=1,
+                num_workers=0,
+                worker_init_fn=worker_init_fn,
+                collate_fn=lambda x: x[0],  # already collated
+            )

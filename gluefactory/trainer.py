@@ -6,6 +6,7 @@ Author: Philipp Lindenberger
 
 import collections
 import signal
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, TypeAlias
 
@@ -59,6 +60,7 @@ def run_evaluation(
     rank: int = 0,
     pbar: bool = True,
     max_iters: int | None = None,
+    compose_loss_str: str | None = None,
 ) -> tuple[Any, ...]:
     model.eval()
     model = (
@@ -73,6 +75,7 @@ def run_evaluation(
         len(loader), min(len(loader), conf.num_eval_plots), replace=False
     )
     max_iters = max_iters or len(loader)
+    max_iters = min(max_iters, len(loader))
     for i, data in enumerate(
         tqdm(loader, desc="Evaluation", ascii=True, disable=not pbar)
     ):
@@ -82,6 +85,8 @@ def run_evaluation(
         with torch.no_grad():
             pred = model(data)
             losses, metrics = model.loss(pred, data)
+            if compose_loss_str is not None:
+                losses["total"] = compose_loss(losses, compose_loss_str)
             if i in plot_ids:
                 figures.append(model.visualize(pred, data))
             # add PR curves
@@ -160,6 +165,7 @@ class Trainer:
         "detect_anomaly": False,  # Enable anomaly detection
         "gradient_accumulation_steps": 1,  # Accumulate gradients over N steps
         "ddp_find_unused_parameters": False,  # DDP find_unused_parameters
+        "overfit": False,  # Overfit a single batch
         "run_benchmarks": (),
         "writer": "tensorboard",  # options: [tensorboard, wandb]
         "project_name": __module_name__,  # wandb project name
@@ -791,6 +797,7 @@ class Trainer:
                     self.rank,
                     pbar=(self.rank == 0),
                     max_iters=max_iters,
+                    compose_loss_str=self.conf.get("compose_loss", None),
                 )
         return results, pr_metrics, figures
 
@@ -869,7 +876,11 @@ class Trainer:
 
             # Create data loader
             train_loader = dataset.get_data_loader(
-                "train", distributed=self.distributed, epoch=self.epoch, pinned=True
+                "train",
+                distributed=self.distributed,
+                epoch=self.epoch,
+                pinned=True,
+                overfit=self.conf.overfit,
             )
             self.info(f"Training loader has {len(train_loader)} batches")
 
@@ -883,7 +894,9 @@ class Trainer:
             # Validation
             if self.conf.eval_every_epoch:
                 if self.epoch % self.conf.eval_every_epoch == 0:
-                    val_loader = dataset.get_data_loader("val")
+                    val_loader = dataset.get_data_loader(
+                        "val", overfit=self.conf.overfit
+                    )
                     self.info(f"Validation loader has {len(val_loader)} batches")
                     eval_results = self.eval_loop(output_dir, val_loader)
                     self.log_eval(writer, 0, eval_results)
