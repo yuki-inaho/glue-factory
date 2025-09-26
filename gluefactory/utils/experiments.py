@@ -176,6 +176,7 @@ def save_experiment(
     distributed: bool = False,
     cp_name: Optional[str] = None,
     best_eval: float | None = None,  # This activates auto early stopping
+    custom: dict[str, Any] | None = None,
 ):
     """Save the current model to a checkpoint
     and return the best result so far."""
@@ -187,6 +188,7 @@ def save_experiment(
         "conf": OmegaConf.to_container(conf, resolve=True),
         "epoch": epoch,
         "eval": results,
+        **(custom or {}),
     }
     if cp_name is None:
         cp_name = (
