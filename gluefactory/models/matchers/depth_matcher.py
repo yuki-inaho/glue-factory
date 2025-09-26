@@ -1,3 +1,5 @@
+import torch
+
 from ...geometry import gt_generation
 from ...utils import misc
 from ..base_model import BaseModel
@@ -36,6 +38,9 @@ class DepthMatcher(BaseModel):
     @misc.filter_batch_for_jit
     @misc.AMP_CUSTOM_FWD_F32
     def _forward(self, data):
+        return self.match_with_depth(data)
+
+    def match_with_depth(self, data):
         result = {}
         if self.conf.use_points:
             if "depth_keypoints0" in data:
@@ -79,3 +84,6 @@ class DepthMatcher(BaseModel):
 
     def loss(self, pred, data):
         raise NotImplementedError
+
+    def _compile(self, *args, **kwargs):
+        self.match_with_depth = torch.compile(self.match_with_depth, *args, **kwargs)
