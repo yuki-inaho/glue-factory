@@ -310,6 +310,9 @@ class Trainer:
             if "lr_scheduler" in checkpoint:
                 self.lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
             self.epoch = checkpoint["epoch"]
+            for metric in ["tot_it", "tot_n_samples"]:
+                if metric in checkpoint:
+                    setattr(self, metric, checkpoint[metric])
             self.info(f"Training state loaded. Resuming at epoch {self.epoch}.")
 
     def maybe_load_checkpoint(self):
@@ -338,6 +341,7 @@ class Trainer:
                 init_cp,
                 load_state=self.conf.get("load_state", False),
                 load_modelconfig=self.conf.get("load_modelconfig", False),
+                strict=self.conf.get("load_strict", True),
             )
 
     def save_checkpoint(
@@ -358,6 +362,10 @@ class Trainer:
                 iter_i=iter_i,
                 epoch=self.epoch,
                 output_dir=output_dir,
+                custom={
+                    "tot_it": self.tot_it,
+                    "tot_n_samples": self.tot_n_samples,
+                },
                 **kwargs,
             )
 
