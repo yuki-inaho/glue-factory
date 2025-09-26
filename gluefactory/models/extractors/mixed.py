@@ -29,6 +29,7 @@ class MixedExtractor(BaseModel):
         "descriptor": {"name": None},
         "interpolate_descriptors_from": None,  # field name, str or list
         "fusion_mlp": None,
+        "allow_no_detect": False,
     }
 
     required_data_keys = ["image"]
@@ -60,7 +61,8 @@ class MixedExtractor(BaseModel):
                 self.fusion = lambda x: x[0]
 
     def _forward(self, data):
-        if self.conf.detector.name:
+        skip_detect = len(data.get("cache", {})) > 0 and self.conf.allow_no_detect
+        if self.conf.detector.name and not skip_detect:
             pred = self.detector(data)
         else:
             pred = data["cache"]
