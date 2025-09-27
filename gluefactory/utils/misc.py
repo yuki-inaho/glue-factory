@@ -95,6 +95,19 @@ def rbd(data: dict) -> dict:
     return tree_map(data, lambda t: t[0])
 
 
+def unsqueeze_n(tensor: torch.Tensor, dim: int, n: int) -> torch.Tensor:
+    for _ in range(n):
+        tensor = tensor.unsqueeze(dim)
+    return tensor
+
+
+def bunsqueeze_like(tensor: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
+    assert tensor.shape[0] == ref.shape[0], "Batch size must match"
+    for _ in range(ref.dim() - tensor.dim()):
+        tensor = tensor.unsqueeze(-1)
+    return tensor
+
+
 def add_prefix(d: dict, prefix: str) -> dict:
     return {prefix + k: v for k, v in d.items()}
 
