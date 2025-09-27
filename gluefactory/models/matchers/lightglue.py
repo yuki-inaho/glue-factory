@@ -394,7 +394,7 @@ class LightGlue(BaseModel):
             ),
         )
 
-    def compile(self, mode="reduce-overhead"):
+    def _compile(self, mode="reduce-overhead"):
         if self.conf.width_confidence != -1:
             warnings.warn(
                 "Point pruning is partially disabled for compiled forward.",
