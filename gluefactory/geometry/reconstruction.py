@@ -240,6 +240,7 @@ class Pose(tensor.TensorWrapper):
         return delta
 
     def update(self, delta: torch.Tensor | Self, inplace: bool = False) -> "Pose":
+        delta = delta.to(self.dtype).to(self.device)
         if not isinstance(delta, self.__class__):
             delta = Pose.exp(delta)
         # Inverted!
@@ -466,6 +467,7 @@ class Camera(tensor.TensorWrapper):
         return delta
 
     def update(self, delta: torch.Tensor | Self, inplace=False) -> "Camera":
+        delta = delta.to(self.dtype).to(self.device)
         if isinstance(delta, self.__class__):
             delta = delta._data[..., 2:4]
 
