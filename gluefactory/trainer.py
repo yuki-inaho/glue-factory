@@ -137,7 +137,6 @@ class Trainer:
             "options": {},  # add lr_scheduler arguments here
         },
         "lr_scaling": [(100, ["dampingnet.const"])],
-        "eval_every_iter": 1000,  # interval for evaluation on the validation set
         "eval_every_epoch": None,  # interval for evaluation on the validation set
         "benchmark_every_epoch": 1,  # interval for evaluation on the test benchmarks
         "save_every_iter": 5000,  # interval for saving the current checkpoint
@@ -149,8 +148,6 @@ class Trainer:
         "median_metrics": [],  # add the median of some metrics
         "recall_metrics": {},  # add the recall of some metrics
         "best_key": "loss/total",  # key to use to select the best checkpoint
-        "dataset_callback_fn": None,  # data func called at the start of each epoch
-        "dataset_callback_on_val": False,  # call data func on val data?
         "clip_grad": None,
         "pr_curves": {},  # add pr curves, set labels/predictions/mask keys
         "num_eval_plots": 4,  # Number of plots to show during evaluation (0=skip)
@@ -485,6 +482,8 @@ class Trainer:
                 writer=self.conf.writer,
                 project=self.conf.project_name,
                 conf=log_conf,
+                run_id=self.conf.get("run_id", None),
+                name_as_run_id=self.conf.get("name_as_run_id", True),
             )
         else:
             writer = None
@@ -644,7 +643,7 @@ class Trainer:
             self.step_timer.measure("loss_fn")
 
             if torch.isnan(loss).any():
-                if not self.conf.get("allow_nan", False):
+                if not self.conf.get("allow_nan", True):
                     raise RuntimeError("NaN detected in training.")
                 logger.warning("Detected NAN, skipping iteration..")
                 del pred, data, loss, losses
@@ -893,13 +892,17 @@ class Trainer:
             self.save_checkpoint(output_dir, full_conf)
             # Validation
             if self.conf.eval_every_epoch:
-                if self.epoch % self.conf.eval_every_epoch == 0:
+                if (
+                    self.epoch % self.conf.eval_every_epoch == 0
+                    or self.epoch == self.conf.epochs  # Run eval in last epoch
+                ):
                     val_loader = dataset.get_data_loader(
                         "val", overfit=self.conf.overfit
                     )
                     self.info(f"Validation loader has {len(val_loader)} batches")
                     eval_results = self.eval_loop(output_dir, val_loader)
-                    self.log_eval(writer, 0, eval_results)
+                    if self.rank == 0:
+                        self.log_eval(writer, 0, eval_results)
 
             # Run test loops
             for bench_name, (bench_conf, every_epoch) in self.benchmarks.items():

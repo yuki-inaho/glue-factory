@@ -31,6 +31,8 @@ class SummaryWriter:
         writer: str | Sequence = "tensorboard",
         name: str | None = None,
         project: str = __module_name__,
+        run_id: str | None = None,
+        name_as_run_id: bool = True,
         **wandb_kwargs,
     ):
         """Initialize the writer."""
@@ -59,12 +61,15 @@ class SummaryWriter:
             )
             wandb_conf = OmegaConf.to_container(conf, resolve=True)
             wandb_conf = misc.flatten_dict(wandb_conf)
+            if name_as_run_id and run_id is None:
+                run_id = name.replace("/", "_")
             wandb.init(
                 project=project,
                 name=name,
                 dir=log_dir,
                 config=wandb_conf,
                 tags=name.split("/"),
+                id=run_id,
                 **wandb_kwargs,
             )
 
