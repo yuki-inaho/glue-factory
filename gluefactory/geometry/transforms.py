@@ -101,7 +101,7 @@ def distort_points(pts, dist):
     """
     ndist = dist.shape[-1]
     undist = pts
-    valid = torch.ones(pts.shape[:-1], device=pts.device, dtype=torch.bool)
+    valid = torch.ones_like(pts[..., 0], dtype=torch.bool)
     if ndist > 0:
         k1, k2 = dist[..., :2].split(1, -1)
         r2 = torch.sum(pts**2, -1, keepdim=True)
