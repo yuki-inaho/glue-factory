@@ -37,6 +37,7 @@ def sample_depth(pts, depth_):
     if depth_.dim() == 2:
         interp = interp[0]
         valid = valid[0]
+    interp[~valid] = 0.0
     return interp, valid
 
 
@@ -132,42 +133,44 @@ def symmetric_reprojection_error(
 
 
 def align_pointclouds(
-    pts_c0: torch.Tensor, pts_c1: torch.Tensor, weights: torch.Tensor = None
+    pts_v0: torch.Tensor, pts_v1: torch.Tensor, weights: torch.Tensor = None
 ) -> tuple[reconstruction.Pose | None, torch.Tensor, torch.Tensor]:
     """Estimate a similarity transformation (sim3) between two point clouds."""
-    assert pts_c0.shape == pts_c1.shape, f"{pts_c0.shape} != {pts_c1.shape}"
-    assert pts_c0.shape[-1] == 3 and len(pts_c0.shape) == 2, f"{pts_c0.shape}"
+    assert pts_v0.shape == pts_v1.shape, f"{pts_v0.shape} != {pts_v1.shape}"
+    assert pts_v0.shape[-1] == 3 and len(pts_v0.shape) == 2, f"{pts_v0.shape}"
     # estimate a sim3 transformation to align two point clouds
     # find M = argmin ||P1 - M @ P2||
-    t0 = pts_c0.mean(dim=0)
-    t1 = pts_c1.mean(dim=0)
-    pts_c0 = pts_c0 - t0[None, :]
-    pts_c1 = pts_c1 - t1[None, :]
+    if weights is None:
+        weights = torch.ones_like(pts_v0[..., 0])
+    weights = weights[:, None]
 
-    s0 = pts_c0.square().sum(dim=-1).mean().sqrt()
-    s1 = pts_c1.square().sum(dim=-1).mean().sqrt()
-    pts_c0 = pts_c0 / s0
-    pts_c1 = pts_c1 / s1
+    t0 = misc.wmean(pts_v0, weights, dim=0)
+    t1 = misc.wmean(pts_v1, weights, dim=0)
+    pts_v0 = pts_v0 - t0[None, :]
+    pts_v1 = pts_v1 - t1[None, :]
 
-    if weights is not None:
-        assert weights.shape == (pts_c0.shape[0],)
-        weights = (weights / weights.sum()).sqrt()
-        pts_c0 = pts_c0 * weights[:, None]
-        pts_c1 = pts_c1 * weights[:, None]
+    s0 = misc.wmean(pts_v0.square().sum(dim=-1), weights[:, 0]).sqrt()
+    s1 = misc.wmean(pts_v1.square().sum(dim=-1), weights[:, 0]).sqrt()
+
+    pts_v0 = pts_v0 / s0
+    pts_v1 = pts_v1 / s1
+
+    pts_v0 = pts_v0 * weights
+    pts_v1 = pts_v1 * weights
     try:
-        U, _, V = (pts_c0.T @ pts_c1).double().svd()
+        U, _, V = (pts_v0.T @ pts_v1).double().svd()
         U: torch.Tensor = U
         V: torch.Tensor = V
     except:
         print("Procustes failed: SVD did not converge!")
         s = s0 / s1
-        return None, s
+        return None, s, pts_v1
     # build rotation matrix
     R = (U @ V.T).float()
     if R.det() < 0:
         R[:, 2] *= -1
-    s = s1 / s1
-    t = t1 - s * (t1 @ R.T)
+    s = s0 / s1
+    t = t0 - s * (t1 @ R.T)
     c0_t_c1 = reconstruction.Pose.from_Rt(R, t)
-    pts1_c0 = c0_t_c1.transform(pts_c1 * s)
+    pts1_c0 = c0_t_c1.transform(pts_v1 * s)
     return c0_t_c1, s, pts1_c0
