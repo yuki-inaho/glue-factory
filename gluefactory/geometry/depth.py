@@ -129,3 +129,45 @@ def symmetric_reprojection_error(
 
     valid = valid0 & valid1
     return reprojection_errors_px, valid
+
+
+def align_pointclouds(
+    pts_c0: torch.Tensor, pts_c1: torch.Tensor, weights: torch.Tensor = None
+) -> tuple[reconstruction.Pose | None, torch.Tensor, torch.Tensor]:
+    """Estimate a similarity transformation (sim3) between two point clouds."""
+    assert pts_c0.shape == pts_c1.shape, f"{pts_c0.shape} != {pts_c1.shape}"
+    assert pts_c0.shape[-1] == 3 and len(pts_c0.shape) == 2, f"{pts_c0.shape}"
+    # estimate a sim3 transformation to align two point clouds
+    # find M = argmin ||P1 - M @ P2||
+    t0 = pts_c0.mean(dim=0)
+    t1 = pts_c1.mean(dim=0)
+    pts_c0 = pts_c0 - t0[None, :]
+    pts_c1 = pts_c1 - t1[None, :]
+
+    s0 = pts_c0.square().sum(dim=-1).mean().sqrt()
+    s1 = pts_c1.square().sum(dim=-1).mean().sqrt()
+    pts_c0 = pts_c0 / s0
+    pts_c1 = pts_c1 / s1
+
+    if weights is not None:
+        assert weights.shape == (pts_c0.shape[0],)
+        weights = (weights / weights.sum()).sqrt()
+        pts_c0 = pts_c0 * weights[:, None]
+        pts_c1 = pts_c1 * weights[:, None]
+    try:
+        U, _, V = (pts_c0.T @ pts_c1).double().svd()
+        U: torch.Tensor = U
+        V: torch.Tensor = V
+    except:
+        print("Procustes failed: SVD did not converge!")
+        s = s0 / s1
+        return None, s
+    # build rotation matrix
+    R = (U @ V.T).float()
+    if R.det() < 0:
+        R[:, 2] *= -1
+    s = s1 / s1
+    t = t1 - s * (t1 @ R.T)
+    c0_t_c1 = reconstruction.Pose.from_Rt(R, t)
+    pts1_c0 = c0_t_c1.transform(pts_c1 * s)
+    return c0_t_c1, s, pts1_c0
