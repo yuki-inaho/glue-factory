@@ -117,6 +117,8 @@ def eval_matches_depth(data: dict, pred: dict) -> dict:
         neg_th=5.0,
     )
 
+    gt_pred = misc.batch_to_device(gt_pred, "cpu", non_blocking=False)
+
     def recall(m, gt_m):
         mask = (gt_m > -1).float()
         return ((m == gt_m) * mask).sum(1) / (1e-8 + mask.sum(1))
@@ -132,6 +134,26 @@ def eval_matches_depth(data: dict, pred: dict) -> dict:
     results["gt_match_precision@3px"] = precision(
         pred["matches0"][None], gt_pred["matches0"].cpu()
     )[0].item()
+
+    if "pred_depth_keypoints0" in pred and "pred_depth_keypoints1" in pred:
+        mgt0 = gt_pred["matches0"][0]
+        mvalid = mgt0 > -1
+        mgt_pts0 = kp0[mvalid]
+        mgt_pts1 = kp1[mgt0[mvalid]]
+
+        mgt_depth0 = pred["pred_depth_keypoints0"][mvalid]
+        mgt_depth1 = pred["pred_depth_keypoints1"][mgt0[mvalid]]
+        m_scores = (mgt_depth0 > 0) & (mgt_depth1 > 0)
+        mgt_xyz0 = camera0[0].image2cam(mgt_pts0) * mgt_depth0[:, None]
+        mgt_xyz1 = camera1[0].image2cam(mgt_pts1) * mgt_depth1[:, None]
+        c0_t_c1, scale, _ = depth.align_pointclouds(
+            mgt_xyz0[m_scores], mgt_xyz1[m_scores]
+        )
+        dpose = c0_t_c1.inv().angular_error(T_0to1[0])
+        results["procrustes_pose_error"] = dpose
+        results["procrustes_pose_error_R@5°"] = (dpose < 5.0).float()
+        results["procrustes_pose_error_R@10°"] = (dpose < 10.0).float()
+        results["procrustes_pose_error_R@20°"] = (dpose < 20.0).float()
     return results
 
 
@@ -178,7 +200,14 @@ def eval_relative_pose_robust(data, pred, conf):
         "m_kpts1": pts1,
         "camera0": data["view0"]["camera"][0],
         "camera1": data["view1"]["camera"][0],
+        "m_scores": scores,
     }
+
+    if "pred_depth_keypoints0" in pred:
+        data_["m_depth0"] = pred["pred_depth_keypoints0"][m0 > -1]
+    if "pred_depth_keypoints1" in pred:
+        data_["m_depth1"] = pred["pred_depth_keypoints1"][m0[m0 > -1]]
+
     est = estimator(data_)
 
     if not est["success"]:
