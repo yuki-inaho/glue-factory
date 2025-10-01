@@ -502,6 +502,17 @@ def masked_mean(
     return sum_tensor / count
 
 
+def wmean(
+    tensor: torch.Tensor,
+    weights: torch.Tensor,
+    dim: int | None = None,
+    keepdim: bool = False,
+) -> torch.Tensor:
+    sum_tensor = (tensor * weights).sum(dim=dim, keepdim=keepdim)
+    sum_weights = weights.sum(dim=dim, keepdim=keepdim).clamp_min(1e-6)
+    return sum_tensor / sum_weights
+
+
 def grid_sample(
     image: torch.Tensor,
     coords: torch.Tensor,
