@@ -146,14 +146,14 @@ def eval_matches_depth(data: dict, pred: dict) -> dict:
         m_scores = (mgt_depth0 > 0) & (mgt_depth1 > 0)
         mgt_xyz0 = camera0[0].image2cam(mgt_pts0) * mgt_depth0[:, None]
         mgt_xyz1 = camera1[0].image2cam(mgt_pts1) * mgt_depth1[:, None]
-        c0_t_c1, scale, _ = depth.align_pointclouds(
-            mgt_xyz0[m_scores], mgt_xyz1[m_scores]
-        )
+        c0_t_c1, _, _ = depth.align_pointclouds(mgt_xyz0[m_scores], mgt_xyz1[m_scores])
+        if c0_t_c1 is None:
+            c0_t_c1 = reconstruction.Pose.identity().to(mgt0.device)
         dpose = c0_t_c1.inv().angular_error(T_0to1[0])
         results["procrustes_pose_error"] = dpose
-        results["procrustes_pose_error_R@5°"] = (dpose < 5.0).float()
-        results["procrustes_pose_error_R@10°"] = (dpose < 10.0).float()
-        results["procrustes_pose_error_R@20°"] = (dpose < 20.0).float()
+        results["procrustes_pose_error<5°"] = (dpose < 5.0).float()
+        results["procrustes_pose_error<10°"] = (dpose < 10.0).float()
+        results["procrustes_pose_error<20°"] = (dpose < 20.0).float()
     return results
 
 

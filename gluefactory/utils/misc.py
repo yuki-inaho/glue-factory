@@ -497,6 +497,7 @@ def masked_mean(
     dim: int | None = None,
     keepdim: bool = False,
 ) -> torch.Tensor:
+    assert tensor.ndim == mask.ndim, (tensor.shape, mask.shape)
     sum_tensor = torch.where(mask, tensor, 0.0).sum(dim=dim, keepdim=keepdim)
     count = mask.sum(dim=dim, keepdim=keepdim).clamp_min(1e-6)
     return sum_tensor / count
@@ -508,6 +509,7 @@ def wmean(
     dim: int | None = None,
     keepdim: bool = False,
 ) -> torch.Tensor:
+    assert tensor.ndim == weights.ndim, (tensor.shape, weights.shape)
     sum_tensor = (tensor * weights).sum(dim=dim, keepdim=keepdim)
     sum_weights = weights.sum(dim=dim, keepdim=keepdim).clamp_min(1e-6)
     return sum_tensor / sum_weights

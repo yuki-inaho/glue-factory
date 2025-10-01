@@ -1,3 +1,5 @@
+import functools
+
 import kornia
 import torch
 
@@ -133,11 +135,20 @@ def symmetric_reprojection_error(
 
 
 def align_pointclouds(
-    pts_v0: torch.Tensor, pts_v1: torch.Tensor, weights: torch.Tensor = None
-) -> tuple[reconstruction.Pose | None, torch.Tensor, torch.Tensor]:
+    pts_v0: torch.Tensor,
+    pts_v1: torch.Tensor,
+    weights: torch.Tensor = None,
+    return_Rt: bool = False,
+) -> tuple[
+    reconstruction.Pose | None | tuple[torch.Tensor, torch.Tensor],
+    torch.Tensor,
+    torch.Tensor,
+]:
     """Estimate a similarity transformation (sim3) between two point clouds."""
     assert pts_v0.shape == pts_v1.shape, f"{pts_v0.shape} != {pts_v1.shape}"
     assert pts_v0.shape[-1] == 3 and len(pts_v0.shape) == 2, f"{pts_v0.shape}"
+
+    pts_v1_in = pts_v1.clone()
     # estimate a sim3 transformation to align two point clouds
     # find M = argmin ||P1 - M @ P2||
     if weights is None:
@@ -156,7 +167,8 @@ def align_pointclouds(
     pts_v1 = pts_v1 / s1
 
     pts_v0 = pts_v0 * weights
-    pts_v1 = pts_v1 * weights
+    # Do not mult here as this is used in the output
+    # pts_v1 = pts_v1 * weights
     try:
         U, _, V = (pts_v0.T @ pts_v1).double().svd()
         U: torch.Tensor = U
@@ -167,10 +179,31 @@ def align_pointclouds(
         return None, s, pts_v1
     # build rotation matrix
     R = (U @ V.T).float()
-    if R.det() < 0:
-        R[:, 2] *= -1
+    R = torch.stack(
+        [R[:, 0], R[:, 1], R[:, 2] * R.det().sign()], dim=-1
+    )  # ensure a right-handed coordinate system
     s = s0 / s1
     t = t0 - s * (t1 @ R.T)
     c0_t_c1 = reconstruction.Pose.from_Rt(R, t)
-    pts1_c0 = c0_t_c1.transform(pts_v1 * s)
-    return c0_t_c1, s, pts1_c0
+    pts1_v0 = c0_t_c1.transform(pts_v1_in * s)
+    if return_Rt:
+        return (R, t), s, pts1_v0
+    else:
+        return c0_t_c1, s, pts1_v0
+
+
+def batch_align_pointclouds(
+    pts_v0: torch.Tensor,
+    pts_v1: torch.Tensor,
+    weights: torch.Tensor = None,
+) -> tuple[reconstruction.Pose | None, torch.Tensor, torch.Tensor]:
+
+    in_dims = (0, 0, 0) if weights is not None else (0, 0)
+
+    c0_Rt_c1, scales, pts1_v0 = torch.vmap(
+        functools.partial(align_pointclouds, return_Rt=True),
+        in_dims=in_dims,
+        out_dims=0,
+    )(pts_v0, pts_v1, weights)
+
+    return reconstruction.Pose.from_Rt(*c0_Rt_c1), scales, pts1_v0
