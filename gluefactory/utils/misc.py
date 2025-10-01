@@ -558,7 +558,7 @@ def get_pixel_grid(
     if fmap is not None and fmap.ndim == 4:
         b = fmap.shape[0]
         grid = grid[None].expand(b, -1, -1, -1)
-    grid += 0.5
+    grid = grid + 0.5
     if normalized:
         grid *= 2 / grid.new_tensor([w, h])
         grid -= 1
