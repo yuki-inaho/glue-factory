@@ -17,10 +17,31 @@ Tree: TypeAlias = dict[Key, Value]
 
 @dataclasses.dataclass
 class ReconstructionData:
-    image_list: list[str]
     image_dir: Path
+    image_list: list[str] | None = None  # If None, load all images in directory.
     reference_sfm: Path | None = None  # Can be used for calibrated reconstruction.
     pairs_file: Path | None = None  # Optional list of pairs.
+
+    def __post_init__(self):
+        if not self.image_dir.exists():
+            raise FileNotFoundError(f"Image directory {self.image_dir} does not exist.")
+        if self.image_list is None:
+            self.image_list = []
+            for suffix in ["*.jpg", "*.png", "*.jpeg", "*.JPG", "*.PNG", "*.JPEG"]:
+                self.image_list.extend(
+                    [
+                        str(p.relative_to(self.image_dir))
+                        for p in sorted(self.image_dir.glob("**/" + suffix))
+                    ]
+                )
+        if len(self.image_list) == 0:
+            raise ValueError(f"No images found in directory {self.image_dir}.")
+        if self.reference_sfm is not None and not self.reference_sfm.exists():
+            raise FileNotFoundError(
+                f"Reference sfm path {self.reference_sfm} does not exist."
+            )
+        if self.pairs_file is not None and not self.pairs_file.exists():
+            raise FileNotFoundError(f"Pairs file {self.pairs_file} does not exist.")
 
     def image_loader(self, data_conf: dict):
         """Load images from the image directory."""

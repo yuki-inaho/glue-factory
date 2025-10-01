@@ -86,8 +86,8 @@ class ETH3DReconstructionPipeline(eval_pipeline.EvalPipeline):
             ref_sfm_dir = self.root_dir / scene / "dslr_calibration_undistorted"
             ref_sfm = pycolmap.Reconstruction(ref_sfm_dir)
             scene_dataset[scene] = types.ReconstructionData(
-                image_list=[image.name for image in ref_sfm.images.values()],
                 image_dir=self.root_dir / scene / "images",
+                image_list=[image.name for image in ref_sfm.images.values()],
                 reference_sfm=ref_sfm_dir,
             )
 
