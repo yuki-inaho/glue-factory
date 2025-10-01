@@ -24,6 +24,7 @@ def export_predictions(
     callback_fn=None,
     optional_keys=[],
     mode: str = "w",
+    store_directional: bool = False,
 ):
     assert keys == "*" or isinstance(keys, (tuple, list))
     Path(output_file).parent.mkdir(exist_ok=True, parents=True)
@@ -35,10 +36,24 @@ def export_predictions(
         pred = model(data)
         if callback_fn is not None:
             pred = {**callback_fn(pred, data), **pred}
+        all_keys = set(pred.keys())
         if keys != "*":
-            if len(set(keys) - set(pred.keys())) > 0:
-                raise ValueError(f"Missing key {set(keys) - set(pred.keys())}")
-            pred = {k: v for k, v in pred.items() if k in keys + optional_keys}
+            matched_keys = []
+            for pattern in keys:
+                found = False
+                for key in all_keys - set(matched_keys):
+                    if pattern in key:
+                        matched_keys.append(key)
+                        found = True
+                assert found, f"Pattern {pattern} not found in prediction keys."
+        else:
+            matched_keys = list(all_keys)
+        for pattern in optional_keys:
+            for key in all_keys - set(matched_keys):
+                if pattern in key:
+                    matched_keys.append(key)
+
+        pred = {k: v for k, v in pred.items() if k in matched_keys}
         assert len(pred) > 0
 
         # renormalization
@@ -71,9 +86,21 @@ def export_predictions(
                     pred[k] = pred[k].astype(np.float16)
         try:
             name = data["name"][0]
-            grp = hfile.create_group(name)
-            dict_to_h5group(grp, pred)
+            if store_directional:
+                view_names = [x["name"][0] for x in misc.iterelements(data, "view")]
+                assert (
+                    len(view_names) == 2
+                ), "Can only store directional data for 2-view inputs."
+                pairs = [(0, 1), (1, 0)]
+                for k, (i, j) in enumerate(pairs):
+                    grpi = hfile.require_group(view_names[i])
+                    grpi_j = grpi.create_group(view_names[j])
+                    dict_to_h5group(grpi_j, misc.get_view(pred, str(k)))
+            else:
+                grp = hfile.create_group(name)
+                dict_to_h5group(grp, pred)
         except RuntimeError:
+            print(f"Skipping {name} (already in file?)")
             continue
 
         del pred
