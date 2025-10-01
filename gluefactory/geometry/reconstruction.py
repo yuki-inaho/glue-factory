@@ -633,7 +633,7 @@ class Reconstruction:
 
         # Set invalid pairs to max error (180 degrees)
         valid = is_registered[:, None] & is_registered[None, :]
-        errors = torch.where(valid, errors, 180.0)
+        errors = torch.where(valid.to(errors.device), errors, 180.0)
 
         # Remove diagonal elements (self-self)
         errors_without_diag = errors[~torch.eye(errors.shape[0], dtype=bool)]
