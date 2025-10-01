@@ -69,6 +69,15 @@ class Pose(tensor.TensorWrapper):
         data = torch.cat([R.flatten(start_dim=-2), t], -1)
         return cls(data)
 
+    def to_Rt(self, numpy: bool = False) -> tuple[torch.Tensor, torch.Tensor]:
+        """Convert pose to rotation matrix and translation vector."""
+        R = self.R.clone()
+        t = self.t.clone()
+        if numpy:
+            R = R.detach().cpu().numpy()
+            t = t.detach().cpu().numpy()
+        return R, t
+
     @classmethod
     @tensor.autocast
     def from_aa(cls, aa: torch.Tensor, t: torch.Tensor):
