@@ -451,9 +451,6 @@ class _MegaDepthSplit(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.items)
 
-    def __len__(self):
-        return len(self.items)
-
 
 def visualize(args):
     conf = {
