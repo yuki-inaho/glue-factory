@@ -75,7 +75,10 @@ class ImagePairs(BaseDataset, torch.utils.data.Dataset):
         return self
 
     def _read_view(self, name):
-        path = settings.DATA_PATH / self.conf.root / name
+        if (Path(self.conf.root) / name).exists():
+            path = Path(self.conf.root) / name
+        else:
+            path = settings.DATA_PATH / self.conf.root / name
         img = preprocess.load_image(path)
         data = self.preprocessor(img)
         data["name"] = name
