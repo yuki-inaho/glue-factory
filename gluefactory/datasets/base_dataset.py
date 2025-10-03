@@ -169,9 +169,10 @@ class BaseDataset(metaclass=ABCMeta):
             dataset,
             batch_size=batch_size,
             pin_memory=True,
-            num_workers=1,
+            num_workers=0,
             worker_init_fn=worker_init_fn,
             collate_fn=collate,
+            prefetch_factor=None,
             **kwargs,
         )
 
