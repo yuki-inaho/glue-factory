@@ -160,6 +160,7 @@ class Trainer:
         "record_memory": None,  # Record memory usage during training (# record steps)
         "log_it": False,  # Log tensorboard on iteration (default is num_samples)
         "detect_anomaly": False,  # Enable anomaly detection
+        "matmul_precision": None,  # Set torch.matmul precision [None, highest, high, medium, low]
         "gradient_accumulation_steps": 1,  # Accumulate gradients over N steps
         "ddp_find_unused_parameters": False,  # DDP find_unused_parameters
         "overfit": False,  # Overfit a single batch
@@ -409,6 +410,8 @@ class Trainer:
         if self.conf.detect_anomaly:
             torch.autograd.set_detect_anomaly(True)
         # TODO
+        if self.conf.matmul_precision is not None:
+            torch.set_float32_matmul_precision(self.conf.matmul_precision)
 
     def prepare_model(self):
         if self.conf.compile is not None:
@@ -483,7 +486,7 @@ class Trainer:
                 project=self.conf.project_name,
                 conf=log_conf,
                 run_id=self.conf.get("run_id", None),
-                name_as_run_id=self.conf.get("name_as_run_id", True),
+                name_as_run_id=self.conf.get("name_as_run_id", False),
             )
         else:
             writer = None
@@ -775,6 +778,8 @@ class Trainer:
             torch.cuda.empty_cache()  # should be cleared at the first iter
             self.step_timer.reset()
         self.optimizer.zero_grad()
+
+        del train_loss_metrics, train_iter
         if self.distributed:
             dist.barrier()
 
