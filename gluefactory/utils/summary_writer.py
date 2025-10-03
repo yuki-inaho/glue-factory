@@ -21,6 +21,18 @@ except ImportError:
     wandb = None
 
 
+def latest_wandb_run_id(log_dir: Path) -> str | None:
+    """Get the latest wandb run id from a log directory."""
+    if not (log_dir / "wandb").exists():
+        return None
+    file = list((log_dir / "wandb" / "latest-run").glob("run-*.wandb"))
+    if not file:
+        return None
+    if len(file) > 1:
+        raise ValueError(f"Multiple ({len(file)}) latest runs found in {log_dir}.")
+    return file[0].stem.replace("run-", "")
+
+
 class SummaryWriter:
     """Writer class for logging to tensorboard or wandb."""
 
@@ -33,6 +45,7 @@ class SummaryWriter:
         project: str = __module_name__,
         run_id: str | None = None,
         name_as_run_id: bool = True,
+        reload_run_id: bool = True,
         **wandb_kwargs,
     ):
         """Initialize the writer."""
@@ -63,6 +76,10 @@ class SummaryWriter:
             wandb_conf = misc.flatten_dict(wandb_conf)
             if name_as_run_id and run_id is None:
                 run_id = name.replace("/", "_")
+            elif reload_run_id and run_id is None:
+                run_id = latest_wandb_run_id(log_dir)
+                if run_id is not None:
+                    logger.info(f"Reloaded wandb run {run_id} from {log_dir}.")
             wandb.init(
                 project=project,
                 name=name,
@@ -132,3 +149,8 @@ class SummaryWriter:
 
         if self.use_tensorboard:
             self.writer.close()
+
+
+if __name__ == "__main__":
+
+    path = Path("outputs/training/megadepth/sp+lg/xyz/xyz_rmse/L5/0")

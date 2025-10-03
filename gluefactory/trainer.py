@@ -14,7 +14,6 @@ import numpy as np
 import torch
 import torch.distributed as dist
 from omegaconf import DictConfig, OmegaConf
-from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from gluefactory import datasets, models
@@ -485,8 +484,10 @@ class Trainer:
                 writer=self.conf.writer,
                 project=self.conf.project_name,
                 conf=log_conf,
+                # WandB options
                 run_id=self.conf.get("run_id", None),
                 name_as_run_id=self.conf.get("name_as_run_id", False),
+                reload_run_id=self.conf.get("reload_run_id", True),
             )
         else:
             writer = None
