@@ -806,6 +806,7 @@ class Trainer:
                 )
         return results, pr_metrics, figures
 
+    @torch.compiler.set_stance("force_eager")
     def test_loop(
         self,
         output_dir: Path,
