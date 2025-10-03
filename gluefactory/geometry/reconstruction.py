@@ -130,6 +130,11 @@ class Pose(tensor.TensorWrapper):
         return self._data[..., -3:]
 
     @property
+    def P(self) -> torch.Tensor:
+        """Projection matrix with shape (..., 3, 4)."""
+        return torch.cat([self.R, self.t[..., :, None]], dim=-1)
+
+    @property
     def E(self) -> torch.Tensor:
         """Convert poses to essential matrices."""
         return gtr.skew_symmetric(self.t) @ self.R
