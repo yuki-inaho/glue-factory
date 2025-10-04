@@ -318,6 +318,9 @@ class Trainer:
             for metric in ["tot_it", "tot_n_samples"]:
                 if metric in checkpoint:
                     setattr(self, metric, checkpoint[metric])
+                    self.info(
+                        f"Loaded {metric}={getattr(self, metric)} ({checkpoint[metric]})"
+                    )
             self.info(f"Training state loaded. Resuming at epoch {self.epoch}.")
 
     def maybe_load_checkpoint(self):
@@ -981,6 +984,9 @@ def launch_training(output_dir: Path, conf: DictConfig, device: torch.device):
             {}
             if conf.get("benchmarks") is None
             else conf.benchmarks.get(bench_name, {})
+        )
+        bench_conf = OmegaConf.merge(
+            {"eval": conf.get("eval", {})}, OmegaConf.create(bench_conf)
         )
         trainer.register_benchmark(bench_name, bench_conf, every_epoch=every_epoch)
     # Maybe load experiment
