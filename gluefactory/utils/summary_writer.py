@@ -80,6 +80,7 @@ class SummaryWriter:
                 run_id = latest_wandb_run_id(log_dir)
                 if run_id is not None:
                     logger.info(f"Reloaded wandb run {run_id} from {log_dir}.")
+                    wandb_kwargs["resume"] = "must"  # always resume if run_id is given
             wandb.init(
                 project=project,
                 name=name,
