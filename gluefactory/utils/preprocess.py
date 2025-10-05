@@ -7,6 +7,7 @@ import kornia
 import numpy as np
 import torch
 from omegaconf import OmegaConf
+from torch import nn
 
 
 def get_divisible_wh(w, h, df=None):
@@ -231,3 +232,17 @@ def zero_pad(size, *images):
         padded[:h, :w] = image
         ret.append(padded)
     return ret
+
+
+class ImageNetNormalizer(nn.Module):
+    """Module to normalize images with ImageNet statistics."""
+
+    def __init__(self):
+        super().__init__()
+        mean = torch.tensor([0.485, 0.456, 0.406])
+        std = torch.tensor([0.229, 0.224, 0.225])
+        self.register_buffer("mean", mean)
+        self.register_buffer("std", std)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return ((x.transpose(-3, -1) - self.mean) / self.std).transpose(-3, -1)
