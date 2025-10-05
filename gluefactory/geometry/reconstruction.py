@@ -6,6 +6,7 @@ Based on PyTorch tensors: differentiable, batched, with GPU support.
 import dataclasses
 import logging
 import math
+from copy import deepcopy
 from pathlib import Path
 from typing import (
     Any,
@@ -21,6 +22,7 @@ from typing import (
 
 import h5py
 import numpy as np
+import plotly.graph_objects as go
 
 Self: TypeAlias = Any
 
@@ -37,6 +39,7 @@ import torch
 import torch.nn.functional as tnf
 
 from ..utils import misc, tensor, tools
+from ..visualization import viz3d
 from . import transforms as gtr
 
 logger = logging.getLogger(__name__)
@@ -100,7 +103,16 @@ class Pose(tensor.TensorWrapper):
             T: transformation matrix with shape (..., 4, 4).
         """
         assert T.shape[-2:] == (4, 4)
-        R, t = T[..., :3, :3], T[..., :3, 3]
+        return cls.from_P(T[..., :3, :4])
+
+    @classmethod
+    def from_projection_matrix(cls, P: torch.Tensor):
+        """Pose from a projection matrix.
+        Args:
+            P: projection matrix with shape (..., 3, 4).
+        """
+        assert P.shape[-2:] == (3, 4)
+        R, t = P[..., :3, :3], P[..., :3, 3]
         return cls.from_Rt(R, t)
 
     @classmethod
@@ -271,6 +283,7 @@ class Pose(tensor.TensorWrapper):
 
 class Camera(tensor.TensorWrapper):
     eps = 1e-4
+    share_df: bool = True  # share fx, fy updates (global): has no impact outside BA
 
     def __init__(self, data: torch.Tensor):
         assert data.shape[-1] in {6, 8, 10}
@@ -475,22 +488,34 @@ class Camera(tensor.TensorWrapper):
         else:
             return p2d
 
+    @property
+    def params(self) -> torch.Tensor:
+        if self.share_df:
+            return self._data[..., 2:3]
+        else:
+            return self._data[..., 2:4]
+
+    @params.setter
+    def params(self, value: torch.Tensor) -> None:
+        # Broadcast in the case of share_df
+        self._data[..., 2:4] = value
+
     def manifold(self, delta: torch.Tensor | None = None) -> torch.Tensor:
         if delta is None:
-            delta = torch.zeros_like(self._data[..., 2:4])
+            return torch.zeros_like(self.params)
         return delta
 
     def update(self, delta: torch.Tensor | Self, inplace=False) -> "Camera":
         delta = delta.to(self.dtype).to(self.device)
         if isinstance(delta, self.__class__):
-            delta = delta._data[..., 2:4]
+            delta = delta.params
 
         if inplace:
-            self._data[..., 2:4] += delta
+            self.params += delta
             return self
         else:
             cam_copy = self.clone()
-            cam_copy._data[..., 2:4] += delta
+            cam_copy.params += delta
             return cam_copy
 
     def to_cameradict(self, camera_model: Optional[str] = None) -> List[Dict]:
@@ -579,13 +604,7 @@ class Reconstruction:
         return self.to("cpu")
 
     def clone(self) -> "Reconstruction":
-        return Reconstruction(
-            w_t_c=self.w_t_c.clone(),
-            cameras=self.cameras.clone(),
-            camera_idx=self.camera_idx.clone(),
-            image_names=self.image_names.copy(),
-            registered=self.registered.clone(),
-        )
+        return deepcopy(self)
 
     def __repr__(self) -> str:
         return (
@@ -677,16 +696,15 @@ class Reconstruction:
         abs_error = (cameras_gt.f - cameras.f).abs()
         rel_error = abs_error / cameras_gt.f
         fov_error = (cameras_gt.fov() - cameras.fov()).abs().mean(-1) * 180.0 / torch.pi
+        do_compare = self.registered[image_ids].bool().to(abs_error.device)
         errors = {
-            "f_abs": torch.where(
-                self.registered[image_ids].bool(), abs_error.max(-1).values, 5000
-            ),
+            "f_abs": torch.where(do_compare, abs_error.max(-1).values, 5000),
             "f_rel": torch.where(
-                self.registered[image_ids].bool(),
+                do_compare,
                 (rel_error.max(-1).values * 100),
                 100.0,
             ),
-            "fov": torch.where(self.registered[image_ids].bool(), fov_error, 180.0),
+            "fov": torch.where(do_compare, fov_error, 180.0),
         }
 
         metrics = {}
@@ -756,3 +774,26 @@ class Reconstruction:
             registered=torch.Tensor(registered).long(),
             image_names=image_names,
         )
+
+    def plot3d(
+        self,
+        fig: go.Figure | None = None,
+        image_ids: Sequence[int] | None = None,
+        height: int = 600,
+        projection: str = "orthographic",
+        cs: int = 10.0,
+    ) -> go.Figure:
+        """Plot the reconstruction in a matplotlib 3D axis."""
+        if fig is None:
+            fig = viz3d.init_figure(height=height, projection=projection)
+        if image_ids is None:
+            image_ids = self.image_ids
+        viz3d.plot_cameras(
+            fig,
+            self.w_t_c[image_ids],
+            self.get_camera(image_ids),
+            name=self.image_names,
+            scale=cs,
+            legendgroup="cameras",
+        )
+        return fig
