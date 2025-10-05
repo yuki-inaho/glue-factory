@@ -9,6 +9,7 @@ import numpy as np
 import torch
 import torch.multiprocessing as tmp
 import torch.nn.functional as F
+import torchvision.transforms.functional as tvf
 
 from . import tensor, types
 
@@ -349,6 +350,10 @@ def tree_summary(tree: types.Tree, flatten: bool = False) -> str:
     )
 
 
+def print_summary(tree: types.Tree, flatten: bool = False):
+    print(tree_summary(tree, flatten=flatten))
+
+
 def to_sequence(map):
     return map.flatten(-2).transpose(-1, -2)
 
@@ -359,6 +364,68 @@ def to_map(sequence):
     assert e * e == n
     assert e * e == n
     sequence.transpose(-1, -2).unflatten(-1, [e, e])
+
+
+def resize_image(
+    image,
+    hw_in: tuple[int, int],
+    hw_out: tuple[int, int],
+    interpolation: str = "bilinear",
+    antialias: bool = False,
+):
+    if hw_in[0] >= 0 and hw_in[1] >= 0:
+        # Find the axes that match hw_in
+        hw_dims = [image.shape.index(dim) for dim in (hw_in)]
+    else:
+        # You can also specify the index of the axis from behind
+        hw_dims = hw_in
+        hw_in = (image.shape[hw_dims[0]], image.shape[hw_dims[1]])
+
+    if hw_in == hw_out:
+        # Nothing to do
+        return image
+    image_in = image.moveaxis(hw_dims, (-2, -1))
+    interpolation = {
+        "nearest": tvf.InterpolationMode.NEAREST,
+        "nn": tvf.InterpolationMode.NEAREST,
+        "linear": tvf.InterpolationMode.BILINEAR,
+        "bilinear": tvf.InterpolationMode.BILINEAR,
+        "cubic": tvf.InterpolationMode.BICUBIC,
+        "bicubic": tvf.InterpolationMode.BICUBIC,
+    }[interpolation]
+    resize_op = tvf.resize(
+        image_in, size=hw_out, interpolation=interpolation, antialias=antialias
+    )
+    image_out = resize_op.moveaxis((-2, -1), hw_dims)
+    return image_out
+
+
+def is_image_of_shape(image: torch.Tensor, hw: tuple[int, int]) -> bool:
+    h, w = hw
+    return h in image.shape and w in image.shape
+
+
+def resize_image_like(
+    tree: types.Tree,
+    hw_in: tuple[int, int],
+    hw_out: tuple[int, int],
+    interpolation: str = "bilinear",
+    antialias: bool = False,
+):
+    return tree_map(
+        tree,
+        lambda x: (
+            resize_image(
+                x,
+                hw_in=hw_in,
+                hw_out=hw_out,
+                interpolation=interpolation,
+                antialias=antialias,
+            )
+            if isinstance(x, torch.Tensor) and is_image_of_shape(x, hw_in)
+            else x
+        ),
+    )
 
 
 def pad_to_length(
