@@ -17,8 +17,8 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "torch==2.7.1",
-    "torchvision==0.22.1",
+    "torch==2.1.2",
+    "torchvision==0.16.2",
     "numpy>=1.23,<2",
     "opencv-python",
     "tqdm",
@@ -65,4 +65,10 @@ profile = "black"
 extend_skip = ["gluefactory_nonfree/", "third_party/"]
 
 [tool.uv]
-dev-dependencies = ["black", "flake8", "isort", "parameterized"]
+dev-dependencies = [
+    "black",
+ "flake8",
+ "isort",
+ "parameterized",
+ "pytest>=8.4.2",
+]
