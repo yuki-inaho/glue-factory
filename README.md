@@ -11,15 +11,24 @@ Glue Factory is CVG's library for training and evaluating deep neural network th
 </p>
 
 ## Installation
-Glue Factory runs with Python 3 and [PyTorch](https://pytorch.org/). The following installs the library and its basic dependencies:
+Glue Factory runs with Python 3 and [PyTorch](https://pytorch.org/). The recommended workflow uses [uv](https://docs.astral.sh/uv/) to manage the virtual environment and dependencies:
 ```bash
 git clone https://github.com/cvg/glue-factory
 cd glue-factory
-python3 -m pip install -e .  # editable mode
+uv sync
 ```
-Some advanced features might require installing the full set of dependencies:
+`uv sync` creates a project-local `.venv`, installs Glue Factory in editable mode, and resolves the dependencies declared in `pyproject.toml`.
+
+To install optional extras or development tools, rerun `uv sync` with the appropriate flags:
 ```bash
-python3 -m pip install -e .[extra]
+uv sync --extra extra       # install optional evaluation dependencies
+uv sync --dev               # install linting and tooling dependencies
+```
+
+If you prefer to manage environments manually, you can still rely on `pip`:
+```bash
+python3 -m pip install -e .        # editable mode
+python3 -m pip install -e .[extra] # optional extras
 ```
 
 All models and datasets in gluefactory have auto-downloaders, so you can get started right away!
