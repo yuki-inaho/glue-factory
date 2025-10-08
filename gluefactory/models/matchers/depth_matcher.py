@@ -1,17 +1,8 @@
 import torch
 
-from ...geometry.gt_generation import (
-    gt_line_matches_from_pose_depth,
-    gt_matches_from_pose_depth,
-)
+from ...geometry import gt_generation
+from ...utils import misc
 from ..base_model import BaseModel
-
-# Hacky workaround for torch.amp.custom_fwd to support older versions of PyTorch.
-AMP_CUSTOM_FWD_F32 = (
-    torch.amp.custom_fwd(cast_inputs=torch.float32, device_type="cuda")
-    if hasattr(torch.amp, "custom_fwd")
-    else torch.cuda.amp.custom_fwd(cast_inputs=torch.float32)
-)
 
 
 class DepthMatcher(BaseModel):
@@ -44,8 +35,12 @@ class DepthMatcher(BaseModel):
                 "valid_lines1",
             ]
 
-    @AMP_CUSTOM_FWD_F32
+    @misc.filter_batch_for_jit
+    @misc.AMP_CUSTOM_FWD_F32
     def _forward(self, data):
+        return self.match_with_depth(data)
+
+    def match_with_depth(self, data):
         result = {}
         if self.conf.use_points:
             if "depth_keypoints0" in data:
@@ -58,7 +53,7 @@ class DepthMatcher(BaseModel):
                 kw = {k: data[k] for k in keys}
             else:
                 kw = {}
-            result = gt_matches_from_pose_depth(
+            result = gt_generation.gt_matches_from_pose_depth(
                 data["keypoints0"],
                 data["keypoints1"],
                 data,
@@ -69,16 +64,18 @@ class DepthMatcher(BaseModel):
                 **kw,
             )
         if self.conf.use_lines:
-            line_assignment, line_m0, line_m1 = gt_line_matches_from_pose_depth(
-                data["lines0"],
-                data["lines1"],
-                data["valid_lines0"],
-                data["valid_lines1"],
-                data,
-                self.conf.n_line_sampled_pts,
-                self.conf.line_perp_dist_th,
-                self.conf.overlap_th,
-                self.conf.min_visibility_th,
+            line_assignment, line_m0, line_m1 = (
+                gt_generation.gt_line_matches_from_pose_depth(
+                    data["lines0"],
+                    data["lines1"],
+                    data["valid_lines0"],
+                    data["valid_lines1"],
+                    data,
+                    self.conf.n_line_sampled_pts,
+                    self.conf.line_perp_dist_th,
+                    self.conf.overlap_th,
+                    self.conf.min_visibility_th,
+                )
             )
             result["line_matches0"] = line_m0
             result["line_matches1"] = line_m1
@@ -87,3 +84,6 @@ class DepthMatcher(BaseModel):
 
     def loss(self, pred, data):
         raise NotImplementedError
+
+    def _compile(self, *args, **kwargs):
+        self.match_with_depth = torch.compile(self.match_with_depth, *args, **kwargs)
