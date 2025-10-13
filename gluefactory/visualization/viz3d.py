@@ -16,7 +16,7 @@ import pycolmap
 import torch
 
 
-def init_figure(height: int = 800, projection: str = "perspective") -> go.Figure:
+def init_figure(height: int = 800, projection: str = "orthographic") -> go.Figure:
     """Initialize a 3D figure."""
     fig = go.Figure()
     axes = dict(
@@ -31,7 +31,9 @@ def init_figure(height: int = 800, projection: str = "perspective") -> go.Figure
         template="plotly_dark",
         height=height,
         scene_camera=dict(
-            projection=dict(type=projection),
+            projection=dict(
+                type=projection,
+            )
         ),
         scene=dict(
             xaxis=axes,
@@ -155,8 +157,10 @@ def plot_points(
     ps: int = 2,
     colorscale: Optional[str] = None,
     name: Optional[str] = None,
+    edge_filter: float | None = None,
 ):
     """Plot a set of 3D points."""
+
     if isinstance(pts, torch.Tensor):
         pts = pts.detach().cpu().numpy()
     if isinstance(color, torch.Tensor):
@@ -169,6 +173,12 @@ def plot_points(
         mode="markers",
         name=name,
         legendgroup=name,
-        marker=dict(size=ps, color=color, line_width=0.0, colorscale=colorscale),
+        marker=dict(
+            size=ps,
+            color=color,
+            line_width=0.0,
+            colorscale=colorscale,
+            colorbar=dict(thickness=20, orientation="h"),
+        ),
     )
     fig.add_trace(tr)
