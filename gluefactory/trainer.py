@@ -158,11 +158,13 @@ class Trainer:
         "profile": None,  # Profile the training with PyTorch profiler (# prof steps)
         "record_memory": None,  # Record memory usage during training (# record steps)
         "log_it": False,  # Log tensorboard on iteration (default is num_samples)
+        "print_arch": False,  # Print the model architecture
         "detect_anomaly": False,  # Enable anomaly detection
         "matmul_precision": None,  # Set torch.matmul precision [None, highest, high, medium, low]
         "gradient_accumulation_steps": 1,  # Accumulate gradients over N steps
         "ddp_find_unused_parameters": False,  # DDP find_unused_parameters
         "overfit": False,  # Overfit a single batch
+        "stop_immediately": False,  # Stop training immediately on SIGINT
         "run_benchmarks": (),
         "writer": "tensorboard",  # options: [tensorboard, wandb]
         "project_name": __module_name__,  # wandb project name
@@ -204,6 +206,8 @@ class Trainer:
         # Initialize model params and conf
         self.all_params = self.model.parameters()
         self.model_conf = self.model.conf
+        if self.conf.print_arch:
+            self.info("Model architecture:\n%s", str(self.model))
 
         # Setup scaler and dtype
         self.use_mp = self.setup_dtype_scaler(conf.mixed_precision)
@@ -400,7 +404,7 @@ class Trainer:
     def setup_sigint_handler(self):
         def sigint_handler(signal, frame):
             logger.info("Caught keyboard interrupt signal, will terminate")
-            if self.stop:
+            if self.stop or self.conf.stop_immediately:
                 raise KeyboardInterrupt
             self.stop = True
 
@@ -724,6 +728,7 @@ class Trainer:
         do_profile = self.conf.profile and self.epoch == 0
         profiler = self.construct_profiler(output_dir) if do_profile else None
         train_loss_metrics = collections.defaultdict(tools.AverageMetric)
+        pr_metrics = collections.defaultdict(tools.PRMetric)
         train_iter = iter(dataloader)
         self.step_timer.hard_reset()
         self.optimizer.zero_grad()
@@ -748,6 +753,9 @@ class Trainer:
             for k, val in loss_metrics.items():
                 train_loss_metrics[k].update(val)
 
+            for k, labels_preds in self.model.pr_metrics(pred, data).items():
+                pr_metrics[k].update(*labels_preds)
+
             # Run profiler (stack trace, ...)
             if profiler is not None:
                 profiler.step()
@@ -762,14 +770,19 @@ class Trainer:
                     writer, it, dataloader.batch_size
                 )
                 self.log_train(
-                    writer, it, train_loss_metrics, extra_str=time_and_mem_str
+                    writer,
+                    it,
+                    {**train_loss_metrics, **pr_metrics},
+                    extra_str=time_and_mem_str,
                 )
                 train_loss_metrics.clear()  # Reset training loss aggregators
+                pr_metrics.clear()  # Reset PR metrics
 
             # Make plots of training steps
             if self.conf.plot_every_iter is not None:
                 if it % self.conf.plot_every_iter == 0 and self.rank == 0:
-                    figures = self.model.visualize(pred, data)
+                    with torch.no_grad():
+                        figures = self.model.visualize(pred, data)
                     tools.write_image_summaries(
                         writer, "training", figures, self.current_it
                     )
