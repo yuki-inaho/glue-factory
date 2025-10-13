@@ -60,8 +60,8 @@ def compose_config(
 
     # pathlib does not support walk_up with python < 3.12, so use os.path.relpath
     rel_conf_dir = Path(os.path.relpath(conf_path.parent, Path(__file__).parent))
-    hydra.initialize(version_base=None, config_path=str(rel_conf_dir))
-    custom_conf = hydra.compose(config_name=conf_path.stem, overrides=overrides)
+    with hydra.initialize(version_base=None, config_path=str(rel_conf_dir)):
+        custom_conf = hydra.compose(config_name=conf_path.stem, overrides=overrides)
     return conf_path, custom_conf
 
 
@@ -259,3 +259,12 @@ def tensorboard_trace_handler(
             os.remove(file_path)
 
     return handler_fn
+
+
+def get_ablation_dir(output_dir: Path, mkdir: bool = False) -> Path:
+    subdirs = [int(p.stem) for p in output_dir.glob("*/") if p.stem.isdigit()]
+    ablate_id = max(subdirs, default=-1) + 1
+    output_dir = output_dir / str(ablate_id)
+    if mkdir:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir
