@@ -8,7 +8,15 @@ from . import depth, epipolar, homography
 
 @torch.no_grad()
 def gt_matches_from_pose_depth(
-    kp0, kp1, data, pos_th=3, neg_th=5, epi_th=None, cc_th=None, **kw
+    kp0,
+    kp1,
+    data,
+    pos_th=3,
+    neg_th=5,
+    epi_th=None,
+    cc_th=None,
+    min_overlap: float | None = None,
+    **kw,
 ):
     if kp0.shape[1] == 0 or kp1.shape[1] == 0:
         b_size, n_kp0 = kp0.shape[:2]
@@ -39,8 +47,16 @@ def gt_matches_from_pose_depth(
     kp1_0, visible1 = depth.project(
         kp1, d1, depth0, camera1, camera0, T_1to0, valid1, ccth=cc_th
     )
-    mask_visible = visible0.unsqueeze(-1) & visible1.unsqueeze(-2)
+    if min_overlap is not None and "overlap_0to1" in data:
+        has_overlap = (
+            torch.max(data["overlap_0to1"], data["overlap_1to0"]) > min_overlap
+        )
+        visible0 = visible0 & has_overlap.unsqueeze(-1)
+        visible1 = visible1 & has_overlap.unsqueeze(-1)
+    else:
+        has_overlap = torch.ones_like(data["T_0to1"]._data[:, -1], dtype=bool)
 
+    mask_visible = visible0.unsqueeze(-1) & visible1.unsqueeze(-2)
     # build a distance matrix of size [... x M x N]
     dist0 = torch.sum((kp0_1.unsqueeze(-2) - kp1.unsqueeze(-3)) ** 2, -1)
     dist1 = torch.sum((kp0.unsqueeze(-2) - kp1_0.unsqueeze(-3)) ** 2, -1)
@@ -98,6 +114,7 @@ def gt_matches_from_pose_depth(
         "proj_1to0": kp1_0,
         "visible0": visible0,
         "visible1": visible1,
+        "has_overlap": has_overlap,
     }
 
 
