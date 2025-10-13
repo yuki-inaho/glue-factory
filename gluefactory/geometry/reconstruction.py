@@ -103,7 +103,7 @@ class Pose(tensor.TensorWrapper):
             T: transformation matrix with shape (..., 4, 4).
         """
         assert T.shape[-2:] == (4, 4)
-        return cls.from_P(T[..., :3, :4])
+        return cls.from_projection_matrix(T[..., :3, :4])
 
     @classmethod
     def from_projection_matrix(cls, P: torch.Tensor):
