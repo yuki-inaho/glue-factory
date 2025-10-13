@@ -62,7 +62,14 @@ def map_tensor(input_, func):
 
 
 def batch_to_numpy(batch):
-    return map_tensor(batch, lambda tensor: tensor.cpu().numpy())
+    return map_tensor(
+        batch,
+        lambda tensor: (
+            tensor.cpu().numpy()
+            if tensor.dtype != torch.bfloat16
+            else tensor.cpu().to(torch.float32).numpy()
+        ),
+    )
 
 
 def batch_to_device(batch, device, non_blocking=True):
