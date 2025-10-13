@@ -31,6 +31,7 @@ class TwoViewPipeline(BaseModel):
         "ground_truth": {"name": None},
         "allow_no_extract": False,
         "run_gt_in_forward": False,
+        "from_triplet": False,
     }
     required_data_keys = ["view0", "view1"]
     strict_conf = False  # need to pass new confs to children models
@@ -69,7 +70,17 @@ class TwoViewPipeline(BaseModel):
             pred_i = {**pred_i, **self.extractor({**data_i, **pred_i})}
         return pred_i
 
+    def triplet_to_pairs(self, data):
+        # Convert triplet to three pairs (inplace because easier)
+        tv_datas = [misc.get_twoview(data, idx) for idx in ["0to1", "1to2", "0to2"]]
+        data.clear()
+        data.update(misc.concat_tree(tv_datas))
+        return data
+
     def _forward(self, data):
+        if "view2" in data:
+            # Convert triplet to three pairs (inplace because easier)
+            self.triplet_to_pairs(data)
         if self.conf.get("extract_parallel", False) and self.training:
             bs = data["view0"]["image"].shape[0]
             data_01 = misc.concat_tree([data["view0"], data["view1"]])
@@ -126,6 +137,8 @@ class TwoViewPipeline(BaseModel):
 
     def visualize(self, pred, data, **kwargs):
         """Visualize the matches."""
+        if "view2" in data:
+            self.triplet_to_pairs(data)
         figures = {}
         for k in self.components:
             if self.conf[k].name and self.conf[k].get("visualize", True):
@@ -135,6 +148,8 @@ class TwoViewPipeline(BaseModel):
     def pr_metrics(self, pred, data):
         """Compute precision-recall metrics."""
         pr_metrics = {}
+        if "view2" in data:
+            self.triplet_to_pairs(data)
         for k in self.components:
             if self.conf[k].name and hasattr(getattr(self, k), "pr_metrics"):
                 pr_metrics.update(getattr(self, k).pr_metrics(pred, data))
