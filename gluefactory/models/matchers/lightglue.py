@@ -190,7 +190,12 @@ class CrossBlock(nn.Module):
         return func(x0), func(x1)
 
     def forward(
-        self, x0: torch.Tensor, x1: torch.Tensor, mask: Optional[torch.Tensor] = None
+        self,
+        x0: torch.Tensor,
+        x1: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+        encoding0: Optional[torch.Tensor] = None,
+        encoding1: Optional[torch.Tensor] = None,
     ) -> List[torch.Tensor]:
         qk0, qk1 = self.map_(self.to_qk, x0, x1)
         v0, v1 = self.map_(self.to_v, x0, x1)
@@ -198,6 +203,9 @@ class CrossBlock(nn.Module):
             lambda t: t.unflatten(-1, (self.heads, -1)).transpose(1, 2),
             (qk0, qk1, v0, v1),
         )
+        if encoding0 is not None and encoding1 is not None:
+            qk0 = apply_cached_rotary_emb(encoding0, qk0)
+            qk1 = apply_cached_rotary_emb(encoding1, qk1)
         if self.flash is not None and qk0.device.type == "cuda":
             m0 = self.flash(qk0, qk1, v1, mask)
             m1 = self.flash(
