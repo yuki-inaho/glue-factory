@@ -13,7 +13,7 @@ class DepthMatcher(BaseModel):
         "th_negative": 5.0,
         "th_epi": None,  # add some more epi outliers
         "th_consistency": None,  # check for projection consistency in px
-        "min_overlap": 0.0,  # min overlap to consider a match
+        "min_overlap": None,  # min overlap to consider a match
         # GT parameters for lines
         "use_lines": False,
         "n_line_sampled_pts": 50,
