@@ -500,11 +500,11 @@ def write_dict_summaries(writer, name, items, step):
     for k, v in items.items():
         key = f"{name}/{k}"
         if isinstance(v, dict):
-            writer.add_scalars(key, v, step)
+            writer.add_scalars(key, v, step=step)
         elif isinstance(v, tuple):
-            writer.add_pr_curve(key, *v, step)
+            writer.add_pr_curve(key, *v, step=step)
         else:
-            writer.add_scalar(key, v, step)
+            writer.add_scalar(key, v, step=step)
 
 
 def write_image_summaries(writer, name, figures, step):
