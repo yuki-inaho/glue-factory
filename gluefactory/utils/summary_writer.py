@@ -5,8 +5,15 @@ import os
 from pathlib import Path
 from typing import Any, Sequence
 
+import numpy as np
 import torch
 from omegaconf import DictConfig, OmegaConf
+from sklearn.metrics import (
+    auc,
+    average_precision_score,
+    precision_recall_curve,
+    roc_auc_score,
+)
 from torch import nn
 from torch.utils.tensorboard import SummaryWriter as TFSummaryWriter
 
@@ -163,9 +170,22 @@ class SummaryWriter:
     def add_pr_curve(self, tag: str, *labels_preds, step: int | None = None):
         """Log a precision-recall curve to tensorboard or wandb."""
         if self.use_wandb:
+            # The wandb PR curve interface is a bit clunky, so we compute the metrics ourselves
             step = 1 if step == 0 else step
             # @TODO: check if this works
-            wandb.log({tag: wandb.plot.pr_curve(*labels_preds)}, step=step)
+            labels, preds = labels_preds
+            precision, recall, _ = precision_recall_curve(labels, preds)
+            f1score = 2 * (precision * recall) / (precision + recall + 1e-8)
+            best = np.argmax(f1score)
+            self.add_scalar(f"{tag}/f1", f1score[best], step)
+            self.add_scalar(f"{tag}/precision", precision[best], step)
+            self.add_scalar(f"{tag}/recall", recall[best], step)
+            auprc = auc(recall, precision)
+            self.add_scalar(f"{tag}/auprc", auprc, step)
+            auroc = roc_auc_score(labels, preds)
+            self.add_scalar(f"{tag}/auroc", auroc, step)
+            ap = average_precision_score(labels, preds)
+            self.add_scalar(f"{tag}/ap", ap, step)
 
         if self.use_tensorboard:
             self.writer.add_pr_curve(tag, *labels_preds, global_step=step)
