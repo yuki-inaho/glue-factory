@@ -214,12 +214,31 @@ def concat_tree(trees: Iterable[types.Tree], check: bool = False) -> types.Tree:
     def combine(val_list: Sequence[Any]) -> Any:
         if isinstance(val_list[0], (torch.Tensor, tensor.TensorWrapper)):
             return torch.cat(val_list)
+        elif isinstance(val_list[0], tuple):
+            return tuple(
+                [combine([v[i] for v in val_list]) for i in range(len(val_list[0]))]
+            )
         elif isinstance(val_list[0], Sequence):
             return sum(val_list, start=[])
         else:
             raise TypeError(f"Cannot combine values of type {type(val_list[0])}")
 
     return pack_tree(trees, check=check, fn=combine)
+
+
+def split_tree(tree, num_splits: int) -> list[types.Tree]:
+    """Split a tree into a list of trees along the first dimension of tensors."""
+    flat_tree = flatten_dict(tree)
+
+    split_trees = [{}] * num_splits
+    for k, v in flat_tree.items():
+        if isinstance(v, (torch.Tensor, tensor.TensorWrapper)):
+            splits = torch.split(v, num_splits, dim=0)
+            for i in range(num_splits):
+                split_trees[i][k] = splits[i]
+        else:
+            raise NotImplementedError(f"Cannot split values of type {type(v)}")
+    return [unflatten_dict(t) for t in split_trees]
 
 
 def compare_tree(
