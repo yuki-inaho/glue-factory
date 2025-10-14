@@ -502,7 +502,7 @@ def write_dict_summaries(writer, name, items, step):
         if isinstance(v, dict):
             writer.add_scalars(key, v, step=step)
         elif isinstance(v, tuple):
-            writer.add_pr_curve(key, *v, step=step)
+            writer.add_pr_curve(f"pr/{key}", *v, step=step)
         else:
             writer.add_scalar(key, v, step=step)
 
