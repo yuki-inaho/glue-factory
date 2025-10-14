@@ -78,24 +78,22 @@ class TwoViewPipeline(BaseModel):
         return data
 
     def _forward(self, data):
-        if "view2" in data:
-            # Convert triplet to three pairs (inplace because easier)
-            self.triplet_to_pairs(data)
+        num_views = len([k for k in data.keys() if k.startswith("view")])
         if self.conf.get("extract_parallel", False) and self.training:
             bs = data["view0"]["image"].shape[0]
-            data_01 = misc.concat_tree([data["view0"], data["view1"]])
-            pred_01 = self.extract_view(data_01)
-            pred0 = misc.flat_map(pred_01, lambda _, v: v[:bs], unflatten=True)
-            pred1 = misc.flat_map(pred_01, lambda _, v: v[bs:], unflatten=True)
+            vdata = misc.concat_tree(misc.iterelements(data, pattern="view"))
+            vpred = self.extract_view(vdata)
+            preds = misc.split_tree(vpred, bs, num_views)
         else:
-            pred0 = self.extract_view(data["view0"])
-            pred1 = self.extract_view(data["view1"])
+            preds = [self.extract_view(data[f"view{i}"]) for i in range(num_views)]
 
-        pred = {
-            **{k + "0": v for k, v in pred0.items()},
-            **{k + "1": v for k, v in pred1.items()},
-        }
+        pred = {**{f"{k}{i}": v for i, p in enumerate(preds) for k, v in p.items()}}
 
+        if num_views > 2:
+            assert num_views == 3, "Only support triplets for now"
+            # Convert triplet to three pairs (inplace because easier)
+            self.triplet_to_pairs(data)
+            self.triplet_to_pairs(pred)
         if self.conf.matcher.name:
             pred = {**pred, **self.matcher({**data, **pred})}
         if self.conf.filter.name:
@@ -109,6 +107,8 @@ class TwoViewPipeline(BaseModel):
         return pred
 
     def loss(self, pred, data):
+        if "view2" in data:
+            self.triplet_to_pairs(data)
         losses = {}
         metrics = {}
         total = 0
