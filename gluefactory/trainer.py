@@ -137,6 +137,7 @@ class Trainer:
         },
         "lr_scaling": [(100, ["dampingnet.const"])],
         "eval_every_epoch": None,  # interval for evaluation on the validation set
+        "eval_split": "val",  # split to use for evaluation
         "benchmark_every_epoch": 1,  # interval for evaluation on the test benchmarks
         "save_every_iter": 5000,  # interval for saving the current checkpoint
         "log_every_iter": 200,  # interval for logging the loss to the console
@@ -610,7 +611,7 @@ class Trainer:
         memory_used, memory_total = 0.0, 0.0
         if torch.cuda.is_available():
             device_stats = tools.collect_device_stats()
-            memory_used = device_stats["global_used"]
+            memory_used = device_stats["z_allocated_peak"]
             memory_total = device_stats["global_total"]
             tools.write_dict_summaries(writer, "memory", device_stats, tot_n_samples)
 
@@ -920,7 +921,7 @@ class Trainer:
                     or self.epoch == self.conf.epochs  # Run eval in last epoch
                 ):
                     val_loader = dataset.get_data_loader(
-                        "val", overfit=self.conf.overfit
+                        self.conf.eval_split, overfit=self.conf.overfit
                     )
                     self.info(f"Validation loader has {len(val_loader)} batches")
                     eval_results = self.eval_loop(output_dir, val_loader)
