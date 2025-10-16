@@ -62,6 +62,7 @@ def exists_eval(dir):
 
 class EvalPipeline:
     default_conf = {}
+    eval_data_conf = {}
 
     export_keys = []
     optional_export_keys = []
@@ -110,7 +111,12 @@ class EvalPipeline:
         f = {}
         if not exists_eval(experiment_dir) or overwrite_eval or overwrite:
             logger.info(f"Loop 2: Evaluating predictions in {pred_file}.")
-            s, f, r = self.run_eval(self.get_dataloader(), pred_file)
+            s, f, r = self.run_eval(
+                self.get_dataloader(
+                    OmegaConf.merge(self.default_conf["data"], self.eval_data_conf)
+                ),
+                pred_file,
+            )
             save_eval(experiment_dir, s, f, r)
             logger.info(f"Loop 2 finished. Results saved to {experiment_dir}.")
         s, r = load_eval(experiment_dir)
