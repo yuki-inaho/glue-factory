@@ -51,7 +51,6 @@ class DoppelgangersSplit(torch.utils.data.Dataset):
         )
         if self.conf.only_negatives:
             self.items = self.items[self.items[:, 2] < 1.0e-3]
-        self.items = self.items.tolist()
         if conf.subset is not None:
             seed = conf.seed + epoch if "train" in split else 42
             self.items = np.random.default_rng(seed).choice(

@@ -9,6 +9,7 @@ import functools
 import logging
 from abc import ABCMeta, abstractmethod
 
+import numpy as np
 import omegaconf
 import torch
 from omegaconf import OmegaConf
@@ -191,6 +192,7 @@ class BaseDataset(metaclass=ABCMeta):
         distributed=False,
         epoch: int = 0,
         overfit: bool = False,
+        num_samples: int | None = None,
     ):
         """Return a data loader for a given split."""
         assert split in ["train", "val", "test"]
@@ -202,6 +204,10 @@ class BaseDataset(metaclass=ABCMeta):
             batch_size = self.conf[split + "_batch_size"]
         except omegaconf.MissingMandatoryValue:
             batch_size = self.conf.batch_size
+        if num_samples is not None:
+            dataset.items = np.random.default_rng(42).permutation(dataset.items)[
+                :num_samples
+            ]
         num_workers = self.conf.get("num_workers", batch_size)
         drop_last = True if split == "train" else False
         if distributed:
