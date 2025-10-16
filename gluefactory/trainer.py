@@ -143,6 +143,7 @@ class Trainer:
         },
         "lr_scaling": [(100, ["dampingnet.const"])],
         "eval_every_epoch": None,  # interval for evaluation on the validation set
+        "train_split": "train",  # split to use for training
         "eval_split": "val",  # split to use for evaluation
         "benchmark_every_epoch": 1,  # interval for evaluation on the test benchmarks
         "save_every_iter": 5000,  # interval for saving the current checkpoint
@@ -915,7 +916,7 @@ class Trainer:
         eval_loader = dataset.get_data_loader(
             self.conf.eval_split,
             overfit=self.conf.overfit,
-            distributed=self.distributed,
+            # distributed=self.distributed,
             pinned=True,
         )
         self.log_data(writer, 0, eval_loader, "eval")
@@ -960,7 +961,7 @@ class Trainer:
 
             # Create data loader
             train_loader = dataset.get_data_loader(
-                "train",
+                self.conf.train_split,
                 distributed=self.distributed,
                 epoch=self.epoch,
                 pinned=True,
