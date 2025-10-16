@@ -81,21 +81,21 @@ def run_evaluation(
         with torch.no_grad():
             pred = model(data)
             losses, metrics = model.loss(pred, data)
-            pr_metrics = model.pr_metrics(pred, data)
+            pr_metrics_i = model.pr_metrics(pred, data)
+            losses, metrics, pr_metrics_i = [
+                misc.batch_to_device(x, "cpu") for x in (losses, metrics, pr_metrics_i)
+            ]
             if is_ddp:
                 # Gather all losses and metrics
                 losses = misc.tree_all_gather(losses)
                 metrics = misc.tree_all_gather(metrics)
-                pr_metrics = misc.tree_all_gather(pr_metrics)
-            losses, metrics, pr_metrics = [
-                misc.batch_to_device(x, "cpu") for x in (losses, metrics, pr_metrics)
-            ]
+                pr_metrics_i = misc.tree_all_gather(pr_metrics_i)
             if compose_loss_str is not None:
                 losses["total"] = compose_loss(losses, compose_loss_str)
             if i in plot_ids:
                 figures.append(model.visualize(pred, data))
             # add PR curves
-            for k, (labels, preds) in pr_metrics.items():
+            for k, (labels, preds) in pr_metrics_i.items():
                 pr_metrics[k].update(labels, preds)
         del pred, data
         numbers = {**metrics, **{"loss/" + k: v for k, v in losses.items()}}
@@ -756,7 +756,8 @@ class Trainer:
     ):
         if self.distributed:
             dataloader.sampler.set_epoch(self.epoch)
-        self.log_data(writer, 0, dataloader, "training")
+        if self.rank == 0:
+            self.log_data(writer, 0, dataloader, "training")
         do_profile = self.conf.profile and self.epoch == 0
         profiler = self.construct_profiler(output_dir) if do_profile else None
         train_loss_metrics = collections.defaultdict(tools.AverageMetric)
@@ -916,10 +917,11 @@ class Trainer:
         eval_loader = dataset.get_data_loader(
             self.conf.eval_split,
             overfit=self.conf.overfit,
-            # distributed=self.distributed,
+            distributed=self.distributed,
             pinned=True,
         )
-        self.log_data(writer, 0, eval_loader, "eval")
+        if self.rank == 0 and writer is not None:
+            self.log_data(writer, 0, eval_loader, "eval")
         self.info(f"Evaluation loader has {len(eval_loader)} batches")
         eval_results = self.eval_loop(output_dir, eval_loader, max_iters=max_iters)
         if self.rank == 0 and writer is not None:

@@ -184,7 +184,9 @@ class _MegaDepthSplit(torch.utils.data.Dataset):
                     assert impath in self.images[scene], (impath, scene)
                     idx = np.where(self.images[scene] == impath)[0][0]
                     idxs.append(idx)
-                self.items.append((scene, idxs, 1.0))
+                self.items.append(
+                    (scene, idxs, np.ones((len(idxs), len(idxs)), dtype=np.float32))
+                )
         elif self.conf.views == 1:
             for scene in self.scenes:
                 if scene not in self.images:
@@ -270,7 +272,7 @@ class _MegaDepthSplit(torch.utils.data.Dataset):
         if num_neg is not None:
             neg_pairs = np.stack(np.where(mat <= 0.0), -1)
             neg_pairs = sample_n(neg_pairs, num_neg, seed)
-            pairs += [(scene, (ind[i], ind[j]), 0.0) for i, j in neg_pairs]
+            pairs += [(scene, (ind[i], ind[j]), np.zeros((2, 2))) for i, j in neg_pairs]
         self.items.extend(pairs)
 
     def sample_triplets(self, seed, scene, num_pos, num_neg):
@@ -329,7 +331,6 @@ class _MegaDepthSplit(torch.utils.data.Dataset):
             scene = np.random.choice(scenes).item()
             valid = self.images[scene] != None
             idx = np.random.choice(len(self.images[scene]), p=valid / valid.sum())
-            print(scene, idx)
         path = self.root / self.images[scene][idx]
 
         # read pose data
