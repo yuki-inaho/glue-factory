@@ -146,7 +146,7 @@ if __name__ == "__main__":
                 "test_num_per_scene": 10,
             },
         ],
-        "weights": [0.5, 0.5],
+        "weights": [0.9, 0.1],
         "target_length": 50,
         "seed": 42,
         "batch_size": 4,

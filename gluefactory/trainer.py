@@ -629,6 +629,25 @@ class Trainer:
             f"[Used {memory_used:.1f}/{memory_total:.1f} GB | {steps_per_sec:.1f} it/s]"
         )
 
+    def log_data(
+        self, writer: Writer, it: int, loader: torch.utils.data.DataLoader, split: str
+    ) -> str:
+
+        tot_n_samples = self.current_it
+
+        name = f"{split}_data"
+
+        if hasattr(loader.dataset, "stats"):
+            data_metrics, data_figures = loader.dataset.stats()
+            tools.write_dict_summaries(writer, name, data_metrics, tot_n_samples)
+            tools.write_image_summaries(writer, name, data_figures, tot_n_samples)
+
+        writer.add_scalar(f"{name}/num_batches", len(loader), tot_n_samples)
+        writer.add_scalar(f"{name}/batch_size", loader.batch_size, tot_n_samples)
+        writer.add_scalar(
+            f"{name}/num_samples", len(loader) * loader.batch_size, tot_n_samples
+        )
+
     # ------------------------------------------------------------------------
     # Step functions (train, eval, visualize, ...)
     # ------------------------------------------------------------------------
@@ -736,6 +755,7 @@ class Trainer:
     ):
         if self.distributed:
             dataloader.sampler.set_epoch(self.epoch)
+        self.log_data(writer, 0, dataloader, "training")
         do_profile = self.conf.profile and self.epoch == 0
         profiler = self.construct_profiler(output_dir) if do_profile else None
         train_loss_metrics = collections.defaultdict(tools.AverageMetric)
@@ -892,14 +912,15 @@ class Trainer:
         writer: Writer = None,
         max_iters: int | None = None,
     ) -> tuple[Any, ...]:
-        val_loader = dataset.get_data_loader(
+        eval_loader = dataset.get_data_loader(
             self.conf.eval_split,
             overfit=self.conf.overfit,
             distributed=self.distributed,
             pinned=True,
         )
-        self.info(f"Validation loader has {len(val_loader)} batches")
-        eval_results = self.eval_loop(output_dir, val_loader, max_iters=max_iters)
+        self.log_data(writer, 0, eval_loader, "eval")
+        self.info(f"Evaluation loader has {len(eval_loader)} batches")
+        eval_results = self.eval_loop(output_dir, eval_loader, max_iters=max_iters)
         if self.rank == 0 and writer is not None:
             self.log_eval(writer, 0, eval_results)
         return eval_results

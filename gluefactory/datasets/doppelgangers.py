@@ -40,6 +40,7 @@ class DoppelgangersSplit(torch.utils.data.Dataset):
         self.conf = conf
         pairs_name = {
             "test": "pairs_metadata/test_pairs.npy",
+            "val": "pairs_metadata/test_pairs.npy",
             "train": "pairs_metadata/train_pairs_flip.npy",
         }[split]
         pair_f = settings.DATA_PATH / conf.root / pairs_name
@@ -49,7 +50,7 @@ class DoppelgangersSplit(torch.utils.data.Dataset):
             [x for x in self.items if ".gif" not in x[0] and ".gif" not in x[1]]
         )
         if self.conf.only_negatives:
-            self.items = self.items[self.items[:, 2] < 1.0e-6]
+            self.items = self.items[self.items[:, 2] < 1.0e-3]
         self.items = self.items.tolist()
         if conf.subset is not None:
             seed = conf.seed + epoch if "train" in split else 42
@@ -61,6 +62,7 @@ class DoppelgangersSplit(torch.utils.data.Dataset):
 
         image_dir = {
             "test": "doppelgangers/images/test_set/",
+            "val": "doppelgangers/images/test_set/",
             "train": "doppelgangers/images/train_set_flip/",
         }[split]
         self.image_dir = settings.DATA_PATH / conf.root / image_dir
