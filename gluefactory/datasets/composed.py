@@ -118,6 +118,12 @@ class ComposedSplit(torch.utils.data.Dataset):
 
         figures["dataset_sizes"] = fig
 
+        for d in self.datasets:
+            if hasattr(d, "stats"):
+                dmetrics, dfigures = d.stats()
+                metrics.update({f"{d.conf.name}/{k}": v for k, v in dmetrics.items()})
+                figures.update({f"{d.conf.name}/{k}": v for k, v in dfigures.items()})
+
         return metrics, figures
 
 
