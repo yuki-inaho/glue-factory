@@ -1,6 +1,4 @@
-""" """
-
-from pathlib import Path
+"""DataLoader for the Doppelgangers dataset."""
 
 import numpy as np
 import torch
