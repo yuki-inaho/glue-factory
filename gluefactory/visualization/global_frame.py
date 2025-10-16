@@ -51,8 +51,8 @@ class GlobalFrame:
         self.conf.x = conf["x"] if conf["x"] else self.metrics[0]
         self.conf.y = conf["y"] if conf["y"] else self.metrics[1]
 
-        assert self.conf.x in self.metrics
-        assert self.conf.y in self.metrics
+        assert self.conf.x in self.metrics, self.metrics
+        assert self.conf.y in self.metrics, self.metrics
 
         self.names = list(results)
         self.fig, self.axes = self.init_frame()
@@ -100,8 +100,12 @@ class GlobalFrame:
 
         refx = 0.0
         refy = 0.0
-        x_cat = isinstance(self.results[self.names[0]][self.conf.x][0], (bytes, str))
-        y_cat = isinstance(self.results[self.names[0]][self.conf.y][0], (bytes, str))
+        x_cat = isinstance(
+            self.results[self.names[0]][self.conf.x][0], (bytes, str, np.object_)
+        )
+        y_cat = isinstance(
+            self.results[self.names[0]][self.conf.y][0], (bytes, str, np.object_)
+        )
 
         if self.conf.diff:
             if not x_cat:
@@ -111,7 +115,10 @@ class GlobalFrame:
         for name in list(self.results.keys()):
             x = np.array(self.results[name][self.conf.x])
             y = np.array(self.results[name][self.conf.y])
-
+            if x_cat and isinstance(x, object):
+                x = np.char.decode(x.astype(bytes), "utf-8")
+            if y_cat and isinstance(y, object):
+                y = np.char.decode(y.astype(bytes), "utf-8")
             if x_cat and np.char.isdigit(x.astype(str)).all():
                 x = x.astype(int)
             if y_cat and np.char.isdigit(y.astype(str)).all():
