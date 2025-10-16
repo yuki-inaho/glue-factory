@@ -66,7 +66,7 @@ class HPatchesPipeline(eval_pipeline.EvalPipeline):
     def get_dataloader(self, data_conf=None):
         data_conf = data_conf if data_conf else self.default_conf["data"]
         dataset = datasets.get_dataset("hpatches")(data_conf)
-        return dataset.get_data_loader("test")
+        return dataset.get_data_loader("test", num_samples=self.num_samples)
 
     def get_predictions(self, experiment_dir, model=None, overwrite=False):
         pred_file = experiment_dir / "predictions.h5"

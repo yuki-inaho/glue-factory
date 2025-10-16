@@ -61,18 +61,23 @@ def exists_eval(dir):
 
 
 class EvalPipeline:
-    default_conf = {}
+    default_conf = {
+        "num_samples": None,  # Number of samples to run eval on (None=all)
+    }
     eval_data_conf = {}
 
     export_keys = []
     optional_export_keys = []
+
+    num_samples: int | None = None  # Number of samples to run eval on (None=all)
 
     main_metric = "???"  # You need to define this.
 
     def __init__(self, conf):
         """Assumes"""
         self.default_conf = OmegaConf.create(self.default_conf)
-        self.conf = OmegaConf.merge(self.default_conf, conf)
+        self.conf = OmegaConf.merge(EvalPipeline.default_conf, self.default_conf, conf)
+        self.__class__.num_samples = self.conf.num_samples
         self._init(self.conf)
 
     def _init(self, conf):
@@ -183,9 +188,11 @@ class RelativePosePipeline(EvalPipeline):
         """Assumes"""
         self.default_conf = OmegaConf.create(self.default_conf)
         self.conf = OmegaConf.merge(
-            RelativePosePipeline.default_conf, self.default_conf, conf
+            RelativePosePipeline.default_conf,
+            self.default_conf,
+            conf,
         )
-        self._init(self.conf)
+        super()._init(self.conf)
 
     def _init(self, conf):
         raise NotImplementedError("Add download instructions here")
@@ -195,7 +202,7 @@ class RelativePosePipeline(EvalPipeline):
         """Returns a data loader with samples for each eval datapoint"""
         data_conf = data_conf if data_conf else self.default_conf["data"]
         dataset = datasets.get_dataset(data_conf["name"])(data_conf)
-        return dataset.get_data_loader("test")
+        return dataset.get_data_loader("test", num_samples=self.num_samples)
 
     def get_predictions(self, experiment_dir, model=None, overwrite=False):
         """Export a prediction file for each eval datapoint"""
