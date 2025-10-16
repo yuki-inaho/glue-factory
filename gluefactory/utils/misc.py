@@ -52,7 +52,7 @@ def map_tensor(input_, func):
     elif isinstance(input_, Mapping):
         return {k: map_tensor(sample, func) for k, sample in input_.items()}
     elif isinstance(input_, Sequence):
-        return [map_tensor(sample, func) for sample in input_]
+        return input_.__class__([map_tensor(sample, func) for sample in input_])
     elif isinstance(input_, np.ndarray):
         return func(torch.from_numpy(input_))
     elif input_ is None:
@@ -73,6 +73,9 @@ def batch_to_numpy(batch):
 
 
 def batch_to_device(batch, device, non_blocking=True):
+    if device == "numpy":
+        return batch_to_numpy(batch)
+
     def _func(tensor):
         return tensor.to(device=device, non_blocking=non_blocking)
 
@@ -91,16 +94,20 @@ def pmap(
 
 
 def all_gather(
-    tensor: torch.Tensor, num_devices: int | None = None, dim: int | None = 0
+    item: torch.Tensor | Any, num_devices: int | None = None, dim: int | None = 0
 ) -> torch.Tensor | Sequence[torch.Tensor]:
     if num_devices is None:
         num_devices = torch.distributed.get_world_size()
-    tensor_list = [torch.zeros_like(tensor) for _ in range(num_devices)]
-    torch.distributed.all_gather(tensor_list, tensor)
-    if dim is None:
-        return tensor_list
+    if isinstance(item, torch.Tensor):
+        item_list = [torch.zeros_like(item) for _ in range(num_devices)]
+        torch.distributed.all_gather(item_list, item)
     else:
-        return torch.cat(tensor_list, dim=dim)
+        item_list = [None for _ in range(num_devices)]
+        torch.distributed.all_gather_object(item_list, item)
+    if dim is None:
+        return item_list
+    else:
+        return torch.cat(item_list, dim=dim)
 
 
 def grad_norm(params):
@@ -233,6 +240,8 @@ def concat_tree(trees: Iterable[types.Tree], check: bool = False) -> types.Tree:
             )
         elif isinstance(val_list[0], Sequence):
             return sum(val_list, start=[])
+        elif isinstance(val_list[0], (int, float)):
+            return val_list
         else:
             raise TypeError(f"Cannot combine values of type {type(val_list[0])}")
 
@@ -379,23 +388,10 @@ def tree_tensormap(
     )
 
 
-def tree_all_gather(
-    input_: types.Tree, num_devices: int | None = None, dim: int | None = 0
-) -> types.Tree:
+def tree_all_gather(tree: types.Tree) -> types.Tree:
     """Gather all tensors from all devices."""
-
-    def gather_fn(v):
-        if isinstance(v, tuple) and isinstance(v[0], torch.Tensor):
-            return tuple(all_gather(x, num_devices=num_devices, dim=dim) for x in v)
-        elif isinstance(v, torch.Tensor):
-            return all_gather(v, num_devices=num_devices, dim=dim)
-        else:
-            return v
-
-    return tree_map(
-        input_,
-        func=gather_fn,
-    )
+    trees = all_gather(tree, dim=None)
+    return concat_tree(trees)
 
 
 def tree_summary(tree: types.Tree, flatten: bool = False) -> str:
