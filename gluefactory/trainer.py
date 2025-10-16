@@ -445,7 +445,11 @@ class Trainer:
                 torch.profiler.ProfilerActivity.CUDA,
             ],
             schedule=torch.profiler.schedule(
-                wait=5, warmup=1, active=True, repeat=1, skip_first=10
+                wait=5,
+                warmup=1,
+                active=self.conf.profile,
+                repeat=1,
+                skip_first=10,
             ),
             on_trace_ready=experiments.tensorboard_trace_handler(
                 str(output_dir), use_gzip=not store_raw_trace
@@ -746,6 +750,9 @@ class Trainer:
                 )
                 break
             data = next(train_iter)
+            if self.rank == 0 and it == 0 and self.epoch == 0:
+                # Log a single batch of data
+                misc.print_summary(data)
             self.step_timer.measure("data")
             self.tot_n_samples += dataloader.batch_size * self.num_gpus
             self.tot_it += 1
