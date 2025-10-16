@@ -90,6 +90,19 @@ def pmap(
     return results
 
 
+def all_gather(
+    tensor: torch.Tensor, num_devices: int | None = None, dim: int | None = 0
+) -> torch.Tensor | Sequence[torch.Tensor]:
+    if num_devices is None:
+        num_devices = torch.distributed.get_world_size()
+    tensor_list = [torch.zeros_like(tensor) for _ in range(num_devices)]
+    torch.distributed.all_gather(tensor_list, tensor)
+    if dim is None:
+        return tensor_list
+    else:
+        return torch.cat(tensor_list, dim=dim)
+
+
 def grad_norm(params):
     return torch.nn.utils.get_total_norm([p.grad for p in params if p.grad is not None])
 
@@ -322,7 +335,9 @@ def flat_map(
 ) -> types.Tree:
     """Apply a function to each item in a flattened dictionary."""
     flat_dict = flatten_dict(input_, sep=sep)
-    out = {k: func(k, v) for k, v in flat_dict.items()}
+    out = {}
+    for k in sorted(flat_dict.keys()):
+        out[k] = func(k, flat_dict[k])
     if unflatten:
         out = unflatten_dict(out, sep=sep)
     return out
@@ -349,6 +364,40 @@ def tree_map(
     return flat_map(input_, func=lambda k, v: func(v), sep=sep, unflatten=unflatten)
 
 
+def tree_tensormap(
+    input_: types.Tree,
+    func: Callable[[torch.Tensor], torch.Tensor],
+    sep: str | None = None,
+    unflatten: bool = True,
+) -> types.Tree:
+    """Apply a function to each tensor item in a flattened dictionary."""
+    return flat_map(
+        input_,
+        func=lambda k, v: func(v) if isinstance(v, torch.Tensor) else v,
+        sep=sep,
+        unflatten=unflatten,
+    )
+
+
+def tree_all_gather(
+    input_: types.Tree, num_devices: int | None = None, dim: int | None = 0
+) -> types.Tree:
+    """Gather all tensors from all devices."""
+
+    def gather_fn(v):
+        if isinstance(v, tuple) and isinstance(v[0], torch.Tensor):
+            return tuple(all_gather(x, num_devices=num_devices, dim=dim) for x in v)
+        elif isinstance(v, torch.Tensor):
+            return all_gather(v, num_devices=num_devices, dim=dim)
+        else:
+            return v
+
+    return tree_map(
+        input_,
+        func=gather_fn,
+    )
+
+
 def tree_summary(tree: types.Tree, flatten: bool = False) -> str:
     """Summarize a tree structure."""
 
@@ -361,7 +410,7 @@ def tree_summary(tree: types.Tree, flatten: bool = False) -> str:
             return f"ndarray{t.shape} {t.dtype}"
         elif isinstance(t, (list, tuple)):
             return f"{type(t).__name__}[{len(t)}]"
-        elif isinstance(t, int, str, bytes, float, bool):
+        elif isinstance(t, (int, str, bytes, float, bool)):
             return str(t)
         elif t is None:
             return "None"
