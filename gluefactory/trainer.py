@@ -62,11 +62,8 @@ def run_evaluation(
     compose_loss_str: str | None = None,
 ) -> tuple[Any, ...]:
     model.eval()
-    model = (
-        model.module
-        if isinstance(model, torch.nn.parallel.DistributedDataParallel)
-        else model
-    )  # Get the original model
+    is_ddp = isinstance(model, torch.nn.parallel.DistributedDataParallel)
+    model = model.module if is_ddp else model  # Get the original model
     results = {}
     pr_metrics = collections.defaultdict(tools.PRMetric)
     figures = []
@@ -75,22 +72,31 @@ def run_evaluation(
     )
     max_iters = max_iters or len(loader)
     max_iters = min(max_iters, len(loader))
-    for i, data in enumerate(
-        tqdm(loader, desc="Evaluation", ascii=True, disable=not pbar)
-    ):
+    eval_iter = iter(loader)
+    for i in tqdm(range(len(loader)), desc="Evaluation", ascii=True, disable=not pbar):
         if i >= max_iters:
             break
+        data = next(eval_iter)
         data = misc.batch_to_device(data, device, non_blocking=True)
         with torch.no_grad():
             pred = model(data)
             losses, metrics = model.loss(pred, data)
+            pr_metrics = model.pr_metrics(pred, data)
+            if is_ddp:
+                # Gather all losses and metrics
+                losses = misc.tree_all_gather(losses)
+                metrics = misc.tree_all_gather(metrics)
+                pr_metrics = misc.tree_all_gather(pr_metrics)
+            losses, metrics, pr_metrics = [
+                misc.batch_to_device(x, "cpu") for x in (losses, metrics, pr_metrics)
+            ]
             if compose_loss_str is not None:
                 losses["total"] = compose_loss(losses, compose_loss_str)
             if i in plot_ids:
                 figures.append(model.visualize(pred, data))
             # add PR curves
-            for k, labels_preds in model.pr_metrics(pred, data).items():
-                pr_metrics[k].update(*labels_preds)
+            for k, (labels, preds) in pr_metrics.items():
+                pr_metrics[k].update(labels, preds)
         del pred, data
         numbers = {**metrics, **{"loss/" + k: v for k, v in losses.items()}}
         for k, v in numbers.items():
@@ -611,7 +617,7 @@ class Trainer:
         memory_used, memory_total = 0.0, 0.0
         if torch.cuda.is_available():
             device_stats = tools.collect_device_stats()
-            memory_used = device_stats["z_allocated_peak"]
+            memory_used = device_stats["global_used"]
             memory_total = device_stats["global_total"]
             tools.write_dict_summaries(writer, "memory", device_stats, tot_n_samples)
 
@@ -861,6 +867,36 @@ class Trainer:
             tools.write_image_summaries(writer, f"test_{benchmark_name}", figures, step)
         return summaries, figures
 
+    def run_all_benchmarks(
+        self, output_dir: Path, writer: Writer = None, force: bool = False
+    ):
+        epoch = 0 if force else self.epoch
+        for bench_name, (bench_conf, every_epoch) in self.benchmarks.items():
+            if epoch % every_epoch == 0 and self.rank == 0:
+                # TODO: Make benchmarks distributed!
+                self.test_loop(output_dir, bench_name, bench_conf, writer)
+            if self.distributed:
+                dist.barrier()
+
+    def run_eval(
+        self,
+        output_dir: Path,
+        dataset: datasets.BaseDataset,
+        writer: Writer = None,
+        max_iters: int | None = None,
+    ) -> tuple[Any, ...]:
+        val_loader = dataset.get_data_loader(
+            self.conf.eval_split,
+            overfit=self.conf.overfit,
+            distributed=self.distributed,
+            pinned=True,
+        )
+        self.info(f"Validation loader has {len(val_loader)} batches")
+        eval_results = self.eval_loop(output_dir, val_loader, max_iters=max_iters)
+        if self.rank == 0 and writer is not None:
+            self.log_eval(writer, 0, eval_results)
+        return eval_results
+
     # ------------------------------------------------------------------------
     # Run full training on dataset (train multiple epochs + validation + test)
     # ------------------------------------------------------------------------
@@ -879,12 +915,9 @@ class Trainer:
         if writer is None:
             writer = self.get_writer(output_dir, full_conf)
 
-        for bench_name, (bench_conf, _) in self.benchmarks.items():
-            if self.rank == 0 and self.conf.get("eval_init", False):
-                # TODO: Make benchmarks distributed!
-                self.test_loop(output_dir, bench_name, bench_conf, writer)
-            if self.distributed:
-                dist.barrier()
+        if self.conf.get("eval_init", False):
+            self.run_eval(output_dir, dataset, writer)
+            self.run_all_benchmarks(output_dir, writer, force=True)
 
         # Start Loop
         while self.epoch < self.conf.epochs:
@@ -920,29 +953,14 @@ class Trainer:
                     self.epoch % self.conf.eval_every_epoch == 0
                     or self.epoch == self.conf.epochs  # Run eval in last epoch
                 ):
-                    val_loader = dataset.get_data_loader(
-                        self.conf.eval_split, overfit=self.conf.overfit
-                    )
-                    self.info(f"Validation loader has {len(val_loader)} batches")
-                    eval_results = self.eval_loop(output_dir, val_loader)
-                    if self.rank == 0:
-                        self.log_eval(writer, 0, eval_results)
+                    self.run_eval(output_dir, dataset, writer)
 
             # Run test loops
-            for bench_name, (bench_conf, every_epoch) in self.benchmarks.items():
-                if self.epoch % every_epoch == 0 and self.rank == 0:
-                    # TODO: Make benchmarks distributed!
-                    self.test_loop(output_dir, bench_name, bench_conf, writer)
-                if self.distributed:
-                    dist.barrier()
+            self.run_all_benchmarks(output_dir, writer)
 
         # Final evals
-        for bench_name, (bench_conf, _) in self.benchmarks.items():
-            if self.rank == 0:
-                # TODO: Make benchmarks distributed!
-                self.test_loop(output_dir, bench_name, bench_conf, writer)
-            if self.distributed:
-                dist.barrier()
+        self.run_eval(output_dir, dataset, writer)
+        self.run_all_benchmarks(output_dir, writer, force=True)
 
         if writer is not None:
             writer.close()
