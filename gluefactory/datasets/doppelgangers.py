@@ -6,6 +6,7 @@ import numpy as np
 import torch
 
 from .. import settings
+from ..geometry import reconstruction
 from ..utils import misc, preprocess
 from .base_dataset import BaseDataset
 
@@ -17,13 +18,15 @@ class DoppelgangersDataset(BaseDataset):
         "preprocessing": preprocess.ImagePreprocessor.default_conf,
         "load_images": True,
         "subset": None,
+        "add_dummy_pose_depth": False,  # for compatibility with some pipelines
+        "only_negatives": False,
     }
 
     def _init(self, conf):
         pass
 
     def get_dataset(self, split: str, epoch: int = 0):
-        return DoppelgangersSplit(self.conf, split)
+        return DoppelgangersSplit(self.conf, split, epoch)
 
     def download(self):
         raise NotImplementedError(
@@ -33,19 +36,24 @@ class DoppelgangersDataset(BaseDataset):
 
 class DoppelgangersSplit(torch.utils.data.Dataset):
 
-    def __init__(self, conf, split: str):
+    def __init__(self, conf, split: str, epoch: int = 0):
         self.conf = conf
         pairs_name = {
             "test": "pairs_metadata/test_pairs.npy",
+            "train": "pairs_metadata/train_pairs_flip.npy",
         }[split]
         pair_f = settings.DATA_PATH / conf.root / pairs_name
-        self.items = list(np.load(pair_f, allow_pickle=True))
+        self.items = np.load(pair_f, allow_pickle=True)
 
-        self.items = [
-            x for x in self.items if ".gif" not in x[0] and ".gif" not in x[1]
-        ]
+        self.items = np.array(
+            [x for x in self.items if ".gif" not in x[0] and ".gif" not in x[1]]
+        )
+        if self.conf.only_negatives:
+            self.items = self.items[self.items[:, 2] < 1.0e-6]
+        self.items = self.items.tolist()
         if conf.subset is not None:
-            self.items = np.random.default_rng(32).choice(
+            seed = conf.seed + epoch if "train" in split else 42
+            self.items = np.random.default_rng(seed).choice(
                 self.items, self.conf.subset, replace=False
             )
         self.preprocessor = preprocess.ImagePreprocessor(conf.preprocessing)
@@ -53,6 +61,7 @@ class DoppelgangersSplit(torch.utils.data.Dataset):
 
         image_dir = {
             "test": "doppelgangers/images/test_set/",
+            "train": "doppelgangers/images/train_set_flip/",
         }[split]
         self.image_dir = settings.DATA_PATH / conf.root / image_dir
 
@@ -68,7 +77,6 @@ class DoppelgangersSplit(torch.utils.data.Dataset):
         data = {
             "name": "/".join([name0, name1]),
             "scene": name0.split("/")[0],
-            "nviews": 2,
             "has_overlap": has_overlap,
             "num_matches": num_matches,
         }
@@ -76,6 +84,33 @@ class DoppelgangersSplit(torch.utils.data.Dataset):
         if self.conf.load_images:
             data["view0"] = self._read_view(name0)
             data["view1"] = self._read_view(name1)
+
+        if self.conf.add_dummy_pose_depth:
+            # Unify it with other datasets by adding dummy pose and depth
+            for i in range(2):
+                data[f"view{i}"]["T_w2cam"] = reconstruction.Pose.identity()
+                data[f"view{i}"]["camera"] = reconstruction.Camera.from_image(
+                    data[f"view{i}"]["image"]
+                )
+                data[f"view{i}"]["depth"] = torch.zeros_like(
+                    data[f"view{i}"]["image"][0]
+                )
+                data[f"view{i}"]["scene"] = data["scene"]
+
+            data["T_0to1"] = data["view1"]["T_w2cam"].compose(
+                data["view0"]["T_w2cam"].inv()
+            )
+            data["T_1to0"] = data["T_0to1"].inv()
+            data["overlap_0to1"] = float(data["has_overlap"])
+            data["overlap_1to0"] = float(data["has_overlap"])
+
+            data["overlap"] = np.eye(2, dtype=np.float32)
+            if data["has_overlap"]:
+                data["overlap"][0, 1] = 1.0
+                data["overlap"][1, 0] = 1.0
+            data["idx"] = idx
+            data.pop("has_overlap")
+            data.pop("num_matches")
         return data
 
     def __len__(self):
@@ -101,10 +136,11 @@ if __name__ == "__main__":
 
     dataset = DoppelgangersDataset(conf)
 
-    loader = dataset.get_data_loader("test")
+    loader = dataset.get_data_loader("train")
 
     images = []
     for i, data in tqdm(enumerate(loader)):
+        print(data["has_overlap"])
         images.append(
             [
                 data[f"view{i}"]["image"][0].permute(1, 2, 0)

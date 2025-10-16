@@ -194,9 +194,10 @@ class BaseDataset(metaclass=ABCMeta):
     ):
         """Return a data loader for a given split."""
         assert split in ["train", "val", "test"]
-        if overfit:
-            return self.get_overfit_loader(split)
-        dataset = self.get_dataset(split, epoch=epoch)
+        with tools.fork_rng(self.conf.seed + epoch):
+            if overfit:
+                return self.get_overfit_loader(split)
+            dataset = self.get_dataset(split, epoch=epoch)
         try:
             batch_size = self.conf[split + "_batch_size"]
         except omegaconf.MissingMandatoryValue:

@@ -1,0 +1,172 @@
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+
+from gluefactory.utils import misc, preprocess
+
+from . import get_dataset
+from .base_dataset import BaseDataset
+
+
+class ComposedDataset(BaseDataset):
+    default_conf = {
+        "childs": [],
+        "preprocessing": preprocess.ImagePreprocessor.default_conf,
+        "weights": None,
+        "target_length": "min",  # min, max, <dataset_name>, number
+    }
+
+    def _init(self, conf):
+        child_confs = conf.childs
+        self.datasets = [get_dataset(d.name)(d) for d in child_confs]
+
+    def get_dataset(self, split: str, epoch: int = 0):
+        return ComposedSplit(self.conf, self.datasets, split, epoch)
+
+
+class ComposedSplit(torch.utils.data.Dataset):
+    def __init__(self, conf, datasets, split: str, epoch: int = 0):
+        self.conf = conf
+        self.datasets = [d.get_dataset(split, epoch) for d in datasets]
+        self.sizes = np.array([len(d) for d in self.datasets])
+
+        self.dataset_names = [d.conf.name for d in self.datasets]
+
+        self.weights = conf.get(f"{split}_weights", conf.get("weights", None))
+        self.preprocessor = preprocess.ImagePreprocessor(conf.preprocessing)
+
+        if self.weights is not None:
+            weights = np.array(self.weights)
+            weights = weights / weights.sum()
+            if conf.target_length == "min":
+                ref_length = min(self.sizes)
+                ref_weight = weights[np.argmin(self.sizes)]
+            elif conf.target_length == "max":
+                ref_length = max(self.sizes)
+                ref_weight = weights[np.argmax(self.sizes)]
+            elif (
+                isinstance(conf.target_length, str)
+                and conf.target_length in self.dataset_names
+            ):
+                ref_idx = self.dataset_names.index(conf.target_length)
+                ref_length = self.sizes[ref_idx]
+                ref_weight = weights[ref_idx]
+            elif isinstance(conf.target_length, int):
+                ref_length = conf.target_length
+                ref_weight = 1.0
+            else:
+                raise ValueError(f"Unknown target_length {conf.target_length}")
+            actual_sizes = (weights * ref_length / ref_weight).astype(int)
+
+            self.sample_idxs = []
+            for i, (dataset, actual_size) in enumerate(
+                zip(self.datasets, actual_sizes)
+            ):
+                if actual_size > len(dataset):
+                    idxs = np.random.default_rng(conf.seed + epoch + i).choice(
+                        len(dataset), actual_size, replace=True
+                    )
+                elif actual_size < len(dataset):
+                    idxs = np.random.default_rng(conf.seed + epoch + i).choice(
+                        len(dataset), actual_size, replace=False
+                    )
+                else:
+                    idxs = np.arange(len(dataset))
+                self.sample_idxs.append(idxs)
+            self.sizes = actual_sizes
+        self.cum_sizes = np.cumsum([0] + self.sizes.tolist())
+
+    def get_idxs(self, idx):
+        dataset_idx = np.where(idx < self.cum_sizes)[0][0] - 1
+        sample_idx = idx - self.cum_sizes[dataset_idx]
+        if self.weights is not None:
+            sample_idx = self.sample_idxs[dataset_idx][sample_idx]
+        return dataset_idx, sample_idx
+
+    def __len__(self):
+        return self.cum_sizes[-1]
+
+    def __getitem__(self, idx):
+        dataset_idx, sample_idx = self.get_idxs(idx)
+        element = self.datasets[dataset_idx][sample_idx]
+        element["dataset"] = self.dataset_names[dataset_idx.item()]
+
+        for i, view in enumerate(misc.iterelements(element)):
+            element[f"view{i}"].update(self.preprocessor(view["image"]))
+            if "depth" in view:
+                element[f"view{i}"]["depth"] = self.preprocessor(
+                    view["depth"], interpolation="nearest"
+                )["image"]
+            if "camera" in view:
+                element[f"view{i}"]["camera"] = view["camera"].scale(
+                    element[f"view{i}"]["scales"]
+                )
+        return element
+
+    def stats(self):
+        metrics, figures = {}, {}
+
+        fig, ax = plt.subplots()
+
+        dataset_names = [d.conf.name for d in self.datasets]
+        ax.bar(dataset_names, self.sizes, alpha=0.5, label="sampled")
+        ax.bar(
+            dataset_names, [len(d) for d in self.datasets], alpha=0.5, label="original"
+        )
+        ax.legend()
+        ax.set_title("Dataset sizes")
+
+        figures["dataset_sizes"] = fig
+
+        return metrics, figures
+
+
+if __name__ == "__main__":
+    import matplotlib.pyplot as plt
+    from tqdm import tqdm
+
+    from ..visualization.viz2d import plot_image_grid
+
+    conf = {
+        "name": "composed",
+        "preprocessing": {
+            "resize": (512, 512),
+        },
+        "childs": [
+            {
+                "name": "doppelgangers",
+                "root": "doppelgangerspp",
+                "subset": 100,
+                "add_dummy_pose_depth": True,
+                "only_negatives": True,
+            },
+            {
+                "name": "megadepth",
+                "train_num_per_scene": 100,
+                "test_num_per_scene": 10,
+            },
+        ],
+        "weights": [0.5, 0.5],
+        "target_length": 50,
+        "seed": 42,
+        "batch_size": 4,
+    }
+    dataset = get_dataset("composed")(conf)
+    loader = dataset.get_data_loader("test", shuffle=True)
+
+    metrics, figs = loader.dataset.stats()
+    for k, fig in figs.items():
+        fig.show()
+
+    images = []
+    for i, data in tqdm(enumerate(loader)):
+        images.append(
+            [view["image"][0].permute(1, 2, 0) for view in misc.iterelements(data)]
+        )
+        if i > 3:
+            print(misc.print_summary(data))
+            break
+
+    axes = plot_image_grid(images, dpi=200)
+    plt.savefig("composed.png")
+    plt.show()

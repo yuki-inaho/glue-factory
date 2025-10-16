@@ -403,7 +403,6 @@ class _MegaDepthSplit(torch.utils.data.Dataset):
                 elif k == -1:
                     kpts[:, 0] = y
                     kpts[:, 1] = h - x
-
                 else:
                     raise ValueError
                 features["keypoints"] = kpts
