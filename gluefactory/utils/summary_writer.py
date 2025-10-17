@@ -182,8 +182,12 @@ class SummaryWriter:
             self.add_scalar(f"{tag}/recall", recall[best], step)
             auprc = auc(recall, precision)
             self.add_scalar(f"{tag}/auprc", auprc, step)
-            auroc = roc_auc_score(labels, preds)
-            self.add_scalar(f"{tag}/auroc", auroc, step)
+            try:
+                auroc = roc_auc_score(labels, preds)
+                self.add_scalar(f"{tag}/auroc", auroc, step)
+            except ValueError as e:
+                logger.warning(f"Could not compute {tag}/auroc at step {step}.")
+
             ap = average_precision_score(labels, preds)
             self.add_scalar(f"{tag}/ap", ap, step)
 
