@@ -5,6 +5,7 @@ Author: Philipp Lindenberger
 """
 
 import collections
+import os
 import signal
 from copy import deepcopy
 from pathlib import Path
@@ -80,7 +81,7 @@ def run_evaluation(
         data = misc.batch_to_device(data, device, non_blocking=True)
         with torch.no_grad():
             pred = model(data)
-            losses, metrics = model.loss(pred, data)
+            losses, metrics = model.loss_metrics(pred, data)
             pr_metrics_i = model.pr_metrics(pred, data)
             losses, metrics, pr_metrics_i = [
                 misc.batch_to_device(x, "cpu") for x in (losses, metrics, pr_metrics_i)
@@ -212,7 +213,6 @@ class Trainer:
             )
 
         # Initialize model params and conf
-        self.all_params = self.model.parameters()
         self.model_conf = self.model.conf
         if self.conf.print_arch:
             self.info("Model architecture:\n%s", str(self.model))
@@ -541,9 +541,8 @@ class Trainer:
         extra_str: str = "",
     ):
         tot_n_samples = self.current_it
-        all_params = self.all_params
+        all_params = self.model.parameters()
         writer.add_scalar("l2/param_norm", misc.param_norm(all_params), tot_n_samples)
-        writer.add_scalar("l2/grad_norm", misc.grad_norm(all_params), tot_n_samples)
         loss_metrics = {k: v.compute() for k, v in train_loss_metrics.items()}
         if self.conf.stdout_metrics is None:
             str_loss_metrics = [f"{k} {v:.3E}" for k, v in loss_metrics.items()]
@@ -654,7 +653,7 @@ class Trainer:
     # ------------------------------------------------------------------------
 
     def train_step(
-        self, data: Batch, do_update: bool = True
+        self, data: Batch, do_update: bool = True, log_grad_norm: bool = False
     ) -> tuple[Predictions, LossMetrics]:
         with torch.autocast(
             device_type="cuda" if torch.cuda.is_available() else "cpu",
@@ -665,7 +664,7 @@ class Trainer:
             self.step_timer.measure("to_device")
             pred = self.model(data)
             self.step_timer.measure("forward")
-            losses, metrics = self.model.loss(pred, data)
+            losses, metrics = self.model.loss_metrics(pred, data)
             if self.conf.get("compose_loss", None) is not None:
                 losses["total"] = compose_loss(
                     {**metrics, **losses}, self.conf.compose_loss
@@ -701,6 +700,11 @@ class Trainer:
             if do_backward:
                 self.scaler.scale(loss).backward()
                 self.step_timer.measure("backward")
+
+                if log_grad_norm:
+                    loss_metrics["l2/grad_norm"] = torch.Tensor(
+                        [misc.grad_norm(self.model.parameters())]
+                    )
                 if self.conf.detect_anomaly:
                     # Check for params without any gradient which causes
                     # problems in distributed training with checkpointing
@@ -716,7 +720,7 @@ class Trainer:
                         self.scaler.unscale_(self.optimizer)
                         try:
                             torch.nn.utils.clip_grad_norm_(
-                                self.all_params,
+                                self.model.parameters(),
                                 max_norm=self.conf.clip_grad,
                                 error_if_nonfinite=True,
                             )
@@ -783,14 +787,19 @@ class Trainer:
 
             # Perform gradient accumulation
             do_update = ((it + 1) % self.conf.gradient_accumulation_steps) == 0
-            pred, loss_metrics = self.train_step(data, do_update=do_update)
+
+            do_log = it % self.conf.log_every_iter == 0
+            pred, loss_metrics = self.train_step(
+                data, do_update=do_update, log_grad_norm=do_log
+            )
             if pred is None:
                 continue  # skip iteration due to NaN
-            for k, val in loss_metrics.items():
-                train_loss_metrics[k].update(val)
+            if self.rank == 0:
+                for k, val in loss_metrics.items():
+                    train_loss_metrics[k].update(val)
 
-            for k, labels_preds in self.model.pr_metrics(pred, data).items():
-                pr_metrics[k].update(*labels_preds)
+                for k, labels_preds in self.model.pr_metrics(pred, data).items():
+                    pr_metrics[k].update(*labels_preds)
 
             # Run profiler (stack trace, ...)
             if profiler is not None:
@@ -801,7 +810,12 @@ class Trainer:
                 self.record_memory(output_dir, it)
 
             # Log training metrics (loss, ...) and hardware usage
-            if (it % self.conf.log_every_iter == 0) and self.rank == 0:
+            if do_log and self.rank == 0:
+                writer.add_scalar(
+                    "l2/grad_norm",
+                    train_loss_metrics.pop("l2/grad_norm").compute(),
+                    self.current_it,
+                )
                 time_and_mem_str = self.log_time_and_memory(
                     writer, it, dataloader.batch_size
                 )

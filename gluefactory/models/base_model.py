@@ -63,6 +63,7 @@ class BaseModel(nn.Module, metaclass=MetaModel):
         "visualize": True,  # visualize model predictions
         "compile": True,  # compile the model for faster inference
         "compile_loss": True,  # compile losses for faster inference
+        "run_loss_in_forward": False,  # compute losses inside forward
     }
     required_data_keys = []
     strict_conf = False
@@ -118,7 +119,11 @@ class BaseModel(nn.Module, metaclass=MetaModel):
                     recursive_key_check(expected[key], given[key])
 
         recursive_key_check(self.required_data_keys, data)
-        return self._forward(data)
+        pred = self._forward(data)
+
+        if self.conf.run_loss_in_forward:
+            pred["loss"] = self.loss(pred, data)
+        return pred
 
     @abstractmethod
     def _init(self, conf):
@@ -134,6 +139,14 @@ class BaseModel(nn.Module, metaclass=MetaModel):
     def loss(self, pred, data):
         """To be implemented by the child class."""
         raise NotImplementedError
+
+    def loss_metrics(self, pred, data):
+        """Wrapper around loss and metrics computation."""
+
+        if self.conf.run_loss_in_forward:
+            return pred.pop("loss")
+        else:
+            return self.loss(pred, data)
 
     def visualize(self, pred, data, **kwargs):
         """To be implemented by the child class."""
@@ -177,6 +190,7 @@ class BaseModel(nn.Module, metaclass=MetaModel):
         model = nn.parallel.DistributedDataParallel(model, *args, **kwargs)
         # Add key methods to the DDP model
         model.loss = self.loss
+        model.loss_metrics = self.loss_metrics
         model.visualize = self.visualize
         model.pr_metrics = self.pr_metrics
         return model
