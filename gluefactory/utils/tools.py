@@ -45,7 +45,7 @@ class FAverageMetric:
         self._elements = []
 
     def update(self, tensor):
-        self._elements += tensor.cpu().numpy().tolist()
+        self._elements += tensor.float().cpu().numpy().tolist()
         assert tensor.dim() == 1
         tensor = tensor[~torch.isnan(tensor)]
         self._sum += tensor.sum().item()
@@ -64,7 +64,7 @@ class MedianMetric:
 
     def update(self, tensor):
         assert tensor.dim() == 1
-        self._elements += tensor.cpu().numpy().tolist()
+        self._elements += tensor.float().cpu().numpy().tolist()
 
     def compute(self):
         if len(self._elements) == 0:
@@ -82,10 +82,15 @@ class PRMetric:
     def update(self, labels, predictions, mask=None):
         assert labels.shape == predictions.shape
         self.labels += (
-            (labels[mask] if mask is not None else labels).cpu().numpy().tolist()
+            (labels[mask] if mask is not None else labels)
+            .float()
+            .cpu()
+            .numpy()
+            .tolist()
         )
         self.predictions += (
             (predictions[mask] if mask is not None else predictions)
+            .float()
             .cpu()
             .numpy()
             .tolist()
@@ -107,7 +112,7 @@ class QuantileMetric:
 
     def update(self, tensor):
         assert tensor.dim() == 1
-        self._elements += tensor.cpu().numpy().tolist()
+        self._elements += tensor.float().cpu().numpy().tolist()
 
     def compute(self):
         if len(self._elements) == 0:
@@ -123,7 +128,7 @@ class RecallMetric:
 
     def update(self, tensor):
         assert tensor.dim() == 1
-        self._elements += tensor.cpu().numpy().tolist()
+        self._elements += tensor.float().cpu().numpy().tolist()
 
     def compute(self):
         if isinstance(self.ths, Iterable):
@@ -166,7 +171,7 @@ class AUCMetric:
 
     def update(self, tensor):
         assert tensor.dim() == 1
-        self._elements += tensor.cpu().numpy().tolist()
+        self._elements += tensor.float().cpu().numpy().tolist()
 
     def compute(self):
         if len(self._elements) == 0:
@@ -476,7 +481,18 @@ def get_lr_scheduler(optimizer, conf):
 
 def pack_lr_parameters(params, base_lr, lr_scaling):
     """Pack each group of parameters with the respective scaled learning rate."""
-    filters, scales = tuple(zip(*[(n, s) for s, names in lr_scaling for n in names]))
+    if lr_scaling:
+        filters, scales = tuple(
+            zip(
+                *[
+                    (n, s)
+                    for pattern, s in lr_scaling.items()
+                    for n in pattern.split("+")
+                ]
+            )
+        )
+    else:
+        filters, scales = [], []
     scale2params = collections.defaultdict(list)
     for n, p in params:
         scale = 1

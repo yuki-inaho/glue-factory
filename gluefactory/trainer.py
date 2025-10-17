@@ -142,7 +142,7 @@ class Trainer:
             "factor": 1.0,
             "options": {},  # add lr_scheduler arguments here
         },
-        "lr_scaling": [(100, ["dampingnet.const"])],
+        "lr_scaling": {},  # learning rate scaling for parameter name patterns
         "eval_every_epoch": None,  # interval for evaluation on the validation set
         "train_split": "train",  # split to use for training
         "eval_split": "val",  # split to use for evaluation
@@ -758,8 +758,6 @@ class Trainer:
         writer: Writer,
         max_iters: int | None = None,
     ):
-        if self.distributed:
-            dataloader.sampler.set_epoch(self.epoch)
         if self.rank == 0:
             self.log_data(writer, 0, dataloader, "training")
         do_profile = self.conf.profile and self.epoch == 0
