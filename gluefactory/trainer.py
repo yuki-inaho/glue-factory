@@ -643,9 +643,13 @@ class Trainer:
             tools.write_image_summaries(writer, name, data_figures, tot_n_samples)
 
         writer.add_scalar(f"{name}/num_batches", len(loader), tot_n_samples)
-        writer.add_scalar(f"{name}/batch_size", loader.batch_size, tot_n_samples)
         writer.add_scalar(
-            f"{name}/num_samples", len(loader) * loader.batch_size, tot_n_samples
+            f"{name}/batch_size", loader.batch_size * self.num_gpus, tot_n_samples
+        )
+        writer.add_scalar(
+            f"{name}/num_samples",
+            len(loader) * loader.batch_size * self.num_gpus,
+            tot_n_samples,
         )
 
     # ------------------------------------------------------------------------
@@ -701,10 +705,6 @@ class Trainer:
                 self.scaler.scale(loss).backward()
                 self.step_timer.measure("backward")
 
-                if log_grad_norm:
-                    loss_metrics["l2/grad_norm"] = torch.Tensor(
-                        [misc.grad_norm(self.model.parameters())]
-                    )
                 if self.conf.detect_anomaly:
                     # Check for params without any gradient which causes
                     # problems in distributed training with checkpointing
@@ -724,6 +724,10 @@ class Trainer:
                                 max_norm=self.conf.clip_grad,
                                 error_if_nonfinite=True,
                             )
+                            if log_grad_norm:
+                                loss_metrics["l2/grad_norm"] = torch.Tensor(
+                                    [misc.grad_norm(self.model.parameters())]
+                                )
                             self.scaler.step(self.optimizer)
                         except RuntimeError:
                             logger.warning(
@@ -731,6 +735,10 @@ class Trainer:
                             )
                         self.scaler.update()
                     else:
+                        if log_grad_norm:
+                            loss_metrics["l2/grad_norm"] = torch.Tensor(
+                                [misc.grad_norm(self.model.parameters())]
+                            )
                         self.scaler.step(self.optimizer)
                         self.scaler.update()
                     self.optimizer.zero_grad()
@@ -809,11 +817,12 @@ class Trainer:
 
             # Log training metrics (loss, ...) and hardware usage
             if do_log and self.rank == 0:
-                writer.add_scalar(
-                    "l2/grad_norm",
-                    train_loss_metrics.pop("l2/grad_norm").compute(),
-                    self.current_it,
-                )
+                if "l2/grad_norm" in train_loss_metrics:
+                    writer.add_scalar(
+                        "l2/grad_norm",
+                        train_loss_metrics.pop("l2/grad_norm").compute(),
+                        self.current_it,
+                    )
                 time_and_mem_str = self.log_time_and_memory(
                     writer, it, dataloader.batch_size
                 )
