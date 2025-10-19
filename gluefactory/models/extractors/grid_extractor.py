@@ -18,7 +18,7 @@ def to_map(sequence):
 
 
 class GridExtractor(BaseModel):
-    default_conf = {"cell_size": 14}
+    default_conf = {"cell_size": 16}
     required_data_keys = ["image"]
 
     def _init(self, conf):
