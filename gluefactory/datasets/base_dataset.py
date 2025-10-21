@@ -7,11 +7,13 @@ import collections
 import dataclasses
 import functools
 import logging
+import os
 from abc import ABCMeta, abstractmethod
 
 import numpy as np
 import omegaconf
 import torch
+import torch.distributed as dist
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader, Sampler, get_worker_info
 from torch.utils.data._utils.collate import (
@@ -209,7 +211,20 @@ class BaseDataset(metaclass=ABCMeta):
             dataset.items = np.random.default_rng(42).permutation(dataset.items)[
                 :num_samples
             ]
-        num_workers = self.conf.get("num_workers", batch_size)
+        max_num_workers = 0
+        if hasattr(os, "sched_getaffinity"):
+            max_num_workers = len(os.sched_getaffinity(0))
+        elif os.cpu_count() is not None:
+            max_num_workers = os.cpu_count()
+        if distributed:
+            # limit num_workers per process in distributed training
+            max_num_workers = max_num_workers // dist.get_world_size()
+
+        num_workers = self.conf.get("num_workers", max_num_workers)
+        if num_workers is None or num_workers < 0:
+            num_workers = max_num_workers
+        num_workers = min(num_workers, max_num_workers)
+        logger.info(f"{split} DataLoader num_workers: {num_workers} {os.cpu_count()}")
         drop_last = True if split == "train" else False
         if distributed:
             shuffle = False
