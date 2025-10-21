@@ -15,6 +15,7 @@ import omegaconf
 import torch
 import torch.distributed as dist
 from omegaconf import OmegaConf
+from tensordict import TensorClass
 from torch.utils.data import DataLoader, Sampler, get_worker_info
 from torch.utils.data._utils.collate import (
     default_collate_err_msg_format,
@@ -63,6 +64,8 @@ def collate(batch):
                 storage = elem.untyped_storage()._new_shared(numel)  # noqa: F841
             except AttributeError:
                 storage = elem.storage()._new_shared(numel)  # noqa: F841
+        return torch.stack(batch, dim=0)
+    elif isinstance(elem, TensorClass):
         return torch.stack(batch, dim=0)
     elif (
         elem_type.__module__ == "numpy"

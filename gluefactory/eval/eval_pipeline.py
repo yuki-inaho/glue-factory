@@ -190,12 +190,12 @@ class RelativePosePipeline(EvalPipeline):
     def __init__(self, conf):
         """Assumes"""
         self.default_conf = OmegaConf.create(self.default_conf)
-        self.conf = OmegaConf.merge(
+        conf = OmegaConf.merge(
             RelativePosePipeline.default_conf,
             self.default_conf,
             conf,
         )
-        super()._init(self.conf)
+        super().__init__(conf)
 
     def _init(self, conf):
         raise NotImplementedError("Add download instructions here")

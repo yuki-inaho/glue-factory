@@ -36,7 +36,7 @@ class PoseLibAbsolutePoseEstimator(BaseEstimator):
 
         estimation = {
             "success": success,
-            "M_0to1": M,
+            "c_t_w": M,
             "inliers": torch.tensor(info.pop("inliers")).to(p2d_i),
             **info,
         }

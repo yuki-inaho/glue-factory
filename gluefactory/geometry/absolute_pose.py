@@ -1,10 +1,50 @@
 import kornia
 import torch
 from kornia.geometry.calibration.pnp import _mean_isotropic_scale_normalize
-from torch import Tensor, arange
+from torch import Tensor
 
 from . import transforms as gtr
 from .reconstruction import Pose
+
+
+def _mean_isotropic_scale_normalize(
+    points: torch.Tensor, eps: float = 1e-8
+) -> tuple[torch.Tensor, Pose]:
+    r"""Normalize points. Avoid inplace operations.
+
+    Args:
+       points : Tensor containing the points to be normalized with shape :math:`(B, N, D)`.
+       eps : Small value to avoid division by zero error.
+
+    Returns:
+       Tuple containing the normalized points in the shape :math:`(B, N, D)` and the transformation matrix
+       in the shape :math:`(B, D+1, D+1)`.
+
+    """
+    x_mean = torch.mean(points, dim=1, keepdim=True)  # Bx1xD
+    scale = (points - x_mean).norm(dim=-1, p=2).mean(dim=-1)  # B
+
+    D_int = points.shape[-1]
+    D_float = torch.tensor(points.shape[-1], dtype=torch.float64, device=points.device)
+    scale = torch.sqrt(D_float) / (scale + eps)  # B
+    scale = scale[:, None]  # B x 1
+
+    norm_t_w = (
+        torch.cat([kornia.utils.eye_like(D_int, points), -x_mean], axis=-2) * scale
+    )
+
+    last_col = torch.cat(
+        [torch.zeros_like(x_mean), torch.ones_like(x_mean[..., :1])], axis=-1
+    ).transpose(
+        -1, -2
+    )  # Bx(D+1)x1
+    norm_t_w = torch.cat(
+        [norm_t_w, last_col],
+        axis=-1,
+    )  # Bx(D+1)x(D+1)
+
+    points_norm = kornia.geometry.linalg.transform_points(norm_t_w, points)  # BxNxD
+    return (points_norm, norm_t_w)
 
 
 def pnp_dlt(p3d_w: Tensor, p2d_c: Tensor) -> Pose:
@@ -18,11 +58,19 @@ def pnp_dlt(p3d_w: Tensor, p2d_c: Tensor) -> Pose:
     inv_img_transform_norm = torch.inverse(img_transform_norm)
 
     # Setting up the system (the matrix A in Ax=0)
-    system = torch.zeros((B, 2 * N, 12), dtype=p3d_w.dtype, device=p3d_w.device)
-    system[:, 0::2, 0:4] = p3d_w_norm_h
-    system[:, 1::2, 4:8] = p3d_w_norm_h
-    system[:, 0::2, 8:12] = p3d_w_norm_h * (-1) * img_points_norm[..., 0:1]
-    system[:, 1::2, 8:12] = p3d_w_norm_h * (-1) * img_points_norm[..., 1:2]
+    _system = torch.zeros((B, 2 * N, 4), dtype=p3d_w.dtype, device=p3d_w.device)
+    system = torch.cat(
+        [
+            _system.slice_scatter(p3d_w_norm_h, dim=1, start=0, step=2),
+            _system.slice_scatter(p3d_w_norm_h, dim=1, start=1, step=2),
+            _system.slice_scatter(
+                p3d_w_norm_h * (-1) * img_points_norm[..., 0:1], dim=1, start=0, step=2
+            ).slice_scatter(
+                p3d_w_norm_h * (-1) * img_points_norm[..., 1:2], dim=1, start=1, step=2
+            ),
+        ],
+        dim=-1,
+    )
 
     # Getting the solution vectors.
     _, _, v = torch.svd(system)
@@ -30,10 +78,16 @@ def pnp_dlt(p3d_w: Tensor, p2d_c: Tensor) -> Pose:
 
     # Reshaping the solution vectors to the correct shape.
     solution = solution.reshape(B, 3, 4)
-
+    last_row = torch.cat(
+        [
+            torch.zeros_like(solution[:, :1, :-1]),
+            torch.ones_like(solution[:, :1, -1:]),
+        ],
+        dim=-1,
+    )
     # Creating solution_4x4
-    solution_4x4 = kornia.utils.eye_like(4, solution)
-    solution_4x4[:, :3, :] = solution
+    solution_4x4 = torch.cat([solution, last_row], dim=-2)
+    print(solution_4x4)
 
     # De-normalizing the solution
     intermediate = torch.bmm(solution_4x4, world_transform_norm)

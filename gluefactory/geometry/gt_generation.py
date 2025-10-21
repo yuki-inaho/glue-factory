@@ -54,7 +54,7 @@ def gt_matches_from_pose_depth(
         visible0 = visible0 & has_overlap.unsqueeze(-1)
         visible1 = visible1 & has_overlap.unsqueeze(-1)
     else:
-        has_overlap = torch.ones_like(data["T_0to1"]._data[:, -1], dtype=bool)
+        has_overlap = torch.ones_like(data["T_0to1"].data_[:, -1], dtype=bool)
 
     mask_visible = visible0.unsqueeze(-1) & visible1.unsqueeze(-2)
     # build a distance matrix of size [... x M x N]
