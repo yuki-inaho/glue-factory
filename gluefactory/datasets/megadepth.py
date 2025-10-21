@@ -380,14 +380,15 @@ class _MegaDepthSplit(torch.utils.data.Dataset):
             data["depth"] = self.preprocessor(depth_map, interpolation="nearest")[
                 "image"
             ][0]
-        K = gtr.scale_intrinsics(K, data["scales"])
-
+        # Scale intrinsics
         data = {
             "name": name,
             "scene": scene,
             "T_w2cam": reconstruction.Pose.from_4x4mat(T),
             "depth": depth_map,
-            "camera": reconstruction.Camera.from_calibration_matrix(K).float(),
+            "camera": reconstruction.Camera.from_calibration_matrix(K)
+            .float()
+            .compose_image_transform(data["transform"]),
             **data,
         }
 

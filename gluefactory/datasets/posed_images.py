@@ -150,7 +150,7 @@ class PosedImageDataset(base_dataset.BaseDataset, torch.utils.data.Dataset):
         img = preprocess.load_image(self.get_image_path(scene, name))
         data = self.preprocessor(img)
         data["T_w2cam"] = pose
-        data["camera"] = camera.scale(data["scales"])
+        data["camera"] = camera.compose_image_transform(data["transform"])
         data["name"] = name
 
         if self.conf.depth_dir:

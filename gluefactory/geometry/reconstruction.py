@@ -326,12 +326,16 @@ class Camera(tensor.TensorWrapper):
         )
 
     @classmethod
-    @tensor.autocast
-    def from_calibration_matrix(cls, K: torch.Tensor):
+    def data_from_K(cls, K: torch.Tensor):
         cx, cy = K[..., 0, 2], K[..., 1, 2]
         fx, fy = K[..., 0, 0], K[..., 1, 1]
         data = torch.stack([2 * cx, 2 * cy, fx, fy, cx, cy], -1)
-        return cls(data)
+        return data
+
+    @classmethod
+    @tensor.autocast
+    def from_calibration_matrix(cls, K: torch.Tensor):
+        return cls(Camera.data_from_K(K))
 
     @classmethod
     def from_image(cls, img: torch.Tensor):
@@ -391,6 +395,25 @@ class Camera(tensor.TensorWrapper):
         s = scales
         data = torch.cat([self.size * s, self.f * s, self.c * s, self.dist], -1)
         return self.__class__(data)
+
+    @tensor.autocast
+    def compose_image_transform(
+        self, new_t_img: torch.Tensor, inplace: bool = False
+    ) -> "Camera":
+        """Update the camera parameters after an image space transformation.
+        Args:
+            new_t_img: 3x3 image transformation matrix.
+            inplace: whether to update the current camera or return a new one.
+        """
+        K = self.calibration_matrix()
+        new_K = new_t_img.to(K) @ K
+        new_data = Camera.data_from_K(new_K)
+
+        all_data = torch.cat([new_data, self.dist], -1)
+        if inplace:
+            self._data = all_data
+            return self
+        return Camera(all_data)
 
     def empty_image(self, rgb: bool = False) -> torch.Tensor:  # H X W or 3 X H X W
         """Create an empty image with the camera size."""

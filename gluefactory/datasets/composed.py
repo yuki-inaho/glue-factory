@@ -99,9 +99,9 @@ class ComposedSplit(torch.utils.data.Dataset):
                     view["depth"], interpolation="nearest"
                 )["image"]
             if "camera" in view:
-                K = view["camera"].calibration_matrix()
-                K = view["transform"].to(K.dtype) @ K
-                element[f"view{i}"]["camera"] = Camera.from_calibration_matrix(K)
+                element[f"view{i}"]["camera"] = view["camera"].compose_image_transform(
+                    element[f"view{i}"]["transform"]
+                )
         return element
 
     def stats(self):

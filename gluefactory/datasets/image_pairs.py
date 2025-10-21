@@ -99,12 +99,12 @@ class ImagePairs(BaseDataset, torch.utils.data.Dataset):
             "view1": data1,
         }
         if self.conf.extra_data == "relative_pose":
-            data["view0"]["camera"] = parse_camera(pair_data[2:11]).scale(
-                data0["scales"]
-            )
-            data["view1"]["camera"] = parse_camera(pair_data[11:20]).scale(
-                data1["scales"]
-            )
+            data["view0"]["camera"] = parse_camera(
+                pair_data[2:11]
+            ).compose_image_transform(data0["transform"])
+            data["view1"]["camera"] = parse_camera(
+                pair_data[11:20]
+            ).compose_image_transform(data1["transform"])
             data["T_0to1"] = parse_relative_pose(pair_data[20:])
             data["T_1to0"] = data["T_0to1"].inv()
         elif self.conf.extra_data == "homography":
