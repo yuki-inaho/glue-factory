@@ -48,6 +48,10 @@ class DoppelgangersPipeline(eval_pipeline.EvalPipeline):
         "matching_scores1",
     ]
 
+    # For plotting
+    default_x: str | None = "score"
+    default_y: str | None = "label"
+
     optional_export_keys = []
 
     def _init(self, conf):
@@ -85,7 +89,7 @@ class DoppelgangersPipeline(eval_pipeline.EvalPipeline):
             data = misc.map_tensor(data, lambda t: torch.squeeze(t, dim=0))
 
             results_i = {}
-            scores = pred[conf.score_key]
+            scores = {**data, **pred}[conf.score_key]
             if scores.ndim == 1:
                 results_i["score"] = scores[0].mean().item()
                 for i in range(0, len(scores)):
@@ -106,17 +110,20 @@ class DoppelgangersPipeline(eval_pipeline.EvalPipeline):
         # summarize results as a dict[str, float]
         # you can also add your custom evaluations here
         summaries = {}
-        for k, v in results.items():
+        for k in list(results.keys()):
+            v = results[k]
             arr = np.array(v)
             if not np.issubdtype(np.array(v).dtype, np.number):
                 continue
             summaries[f"m{k}"] = np.mean(arr)
             if "score" in k:
                 suffix = k.replace("score", "")
-                precision, recall, _ = skm.precision_recall_curve(results["label"], v)
+                precision, recall, ths = skm.precision_recall_curve(results["label"], v)
                 summaries[f"auprc{suffix}"] = skm.auc(recall, precision)
                 f1 = 2 * (precision * recall) / (precision + recall + 1e-8)
                 best_idx = np.argmax(f1)
+                summaries[f"best_threshold{suffix}"] = ths[best_idx]
+                results[f"pred{suffix}"] = (v > ths[best_idx]).astype(np.float32)
                 summaries[f"f1{suffix}"] = f1[best_idx]
                 summaries[f"precision{suffix}"] = precision[best_idx]
                 summaries[f"recall{suffix}"] = recall[best_idx]
