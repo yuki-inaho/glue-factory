@@ -12,11 +12,13 @@ from pathlib import Path
 from typing import Any, Optional
 
 import hydra
+import omegaconf
 import pkg_resources
 import torch
 from omegaconf import OmegaConf
 
 from .. import models, settings
+from . import misc
 
 logger = logging.getLogger(__name__)
 
@@ -49,10 +51,23 @@ def parse_config_path(
     return Path(path)
 
 
+def load_sweep_config(
+    sweep_confs: omegaconf.ListConfig,
+    sweep_idx: int,
+) -> omegaconf.DictConfig:
+    conf = {}
+    for sweep_conf in sweep_confs:
+        for k, v in sweep_conf.items():
+            conf[k] = v[sweep_idx]
+    conf = misc.unflatten_dict(conf)
+    return OmegaConf.create(conf)
+
+
 def compose_config(
     name_or_path: Optional[str],
     default_config_dir: str = "configs/",
     overrides: Optional[list[str]] = None,
+    sweep_idx: int | None = None,
 ) -> tuple[Path, OmegaConf]:
 
     conf_path = parse_config_path(name_or_path, default_config_dir)
@@ -62,6 +77,13 @@ def compose_config(
     rel_conf_dir = Path(os.path.relpath(conf_path.parent, Path(__file__).parent))
     with hydra.initialize(version_base=None, config_path=str(rel_conf_dir)):
         custom_conf = hydra.compose(config_name=conf_path.stem, overrides=overrides)
+
+    if sweep_idx is not None:
+        logger.info(f"Loading sweep {sweep_idx}.")
+        sweep_conf = load_sweep_config(custom_conf.get("sweep", []), sweep_idx)
+        OmegaConf.set_struct(custom_conf, False)
+        custom_conf = OmegaConf.merge(custom_conf, sweep_conf)
+        del custom_conf["sweep"]
     return conf_path, custom_conf
 
 
