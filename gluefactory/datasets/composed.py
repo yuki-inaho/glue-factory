@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
+from gluefactory.geometry.reconstruction import Camera
 from gluefactory.utils import misc, preprocess
 
 from . import get_dataset
@@ -37,27 +38,25 @@ class ComposedSplit(torch.utils.data.Dataset):
         self.weights = conf.get(f"{split}_weights", conf.get("weights", None))
         self.preprocessor = preprocess.ImagePreprocessor(conf.preprocessing)
 
+        target_length = conf.get(f"{split}_target_length", conf.target_length)
         if self.weights is not None:
             weights = np.array(self.weights)
             weights = weights / weights.sum()
-            if conf.target_length == "min":
+            if target_length == "min":
                 ref_length = min(self.sizes)
                 ref_weight = weights[np.argmin(self.sizes)]
-            elif conf.target_length == "max":
+            elif target_length == "max":
                 ref_length = max(self.sizes)
                 ref_weight = weights[np.argmax(self.sizes)]
-            elif (
-                isinstance(conf.target_length, str)
-                and conf.target_length in self.dataset_names
-            ):
-                ref_idx = self.dataset_names.index(conf.target_length)
+            elif isinstance(target_length, str) and target_length in self.dataset_names:
+                ref_idx = self.dataset_names.index(target_length)
                 ref_length = self.sizes[ref_idx]
                 ref_weight = weights[ref_idx]
-            elif isinstance(conf.target_length, int):
-                ref_length = conf.target_length
+            elif isinstance(target_length, int):
+                ref_length = target_length
                 ref_weight = 1.0
             else:
-                raise ValueError(f"Unknown target_length {conf.target_length}")
+                raise ValueError(f"Unknown target_length {target_length}")
             actual_sizes = (weights * ref_length / ref_weight).astype(int)
 
             self.sample_idxs = []
@@ -100,9 +99,9 @@ class ComposedSplit(torch.utils.data.Dataset):
                     view["depth"], interpolation="nearest"
                 )["image"]
             if "camera" in view:
-                element[f"view{i}"]["camera"] = view["camera"].scale(
-                    element[f"view{i}"]["scales"]
-                )
+                K = view["camera"].calibration_matrix()
+                K = view["transform"].to(K.dtype) @ K
+                element[f"view{i}"]["camera"] = Camera.from_calibration_matrix(K)
         return element
 
     def stats(self):
