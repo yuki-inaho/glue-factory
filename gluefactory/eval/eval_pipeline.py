@@ -69,6 +69,9 @@ class EvalPipeline:
     export_keys = []
     optional_export_keys = []
 
+    default_x: str | None = None  # Default x-axis for inspection plots
+    default_y: str | None = None  # Default y-axis for inspection plots
+
     num_samples: int | None = None  # Number of samples to run eval on (None=all)
 
     main_metric = "???"  # You need to define this.
