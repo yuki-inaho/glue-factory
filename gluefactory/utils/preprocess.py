@@ -28,6 +28,7 @@ class ImagePreprocessor:
         "antialias": True,
         "square_pad": False,
         "add_padding_mask": False,
+        "crop_if_short_side": False,
     }
 
     def __init__(self, conf) -> None:
@@ -53,15 +54,17 @@ class ImagePreprocessor:
                 interpolation=interpolation,
             )
         scale = torch.Tensor([img.shape[-1] / w, img.shape[-2] / h]).to(img)
-        T = np.diag([scale[0], scale[1], 1])
+        r_t_img = np.diag([scale[0], scale[1], 1])
 
         data = {
             "scales": scale,
             "image_size": np.array(size[::-1]),
-            "transform": T,
+            "transform": r_t_img,
             "original_image_size": np.array([w, h]),
         }
-        if self.conf.square_pad:
+        if self.conf.square_pad and (
+            self.conf.side == "long" or not self.conf.crop_if_short_side
+        ):
             padding_data = square_pad(
                 img,
                 return_mask=self.conf.add_padding_mask,
@@ -70,6 +73,12 @@ class ImagePreprocessor:
             data["corners_hw"] = padding_data["corners_hw"].numpy()
             if "valid" in padding_data:
                 data["padding_mask"] = padding_data["valid"]
+            data["transform"] = padding_data["transform"] @ data["transform"]
+        elif self.conf.side == "short" and self.conf.crop_if_short_side:
+            crop_data = square_crop(img)
+            data["image"] = crop_data["image"]
+            data["corners_hw"] = crop_data["corners_hw"].numpy()
+            data["transform"] = crop_data["transform"] @ data["transform"]
         else:
             data["image"] = img
         return data
@@ -147,6 +156,29 @@ def square_pad(
         else:
             valid[..., :h, :w] = True
         ret["valid"] = valid
+    return ret
+
+
+def square_crop(
+    image: torch.Tensor,
+    center: bool = True,
+) -> dict[str, torch.Tensor]:
+    """Crop the image to a square shape."""
+    h, w = image.shape[-2:]
+    hw = min(h, w)
+    if center:
+        oy = (h - hw) // 2
+        ox = (w - hw) // 2
+        image = image[..., oy : oy + hw, ox : ox + hw]
+    else:
+        image = image[..., :hw, :hw]
+        ox, oy = 0, 0
+    corners_hw = torch.as_tensor(
+        [[oy, ox], [oy + hw, ox + hw]], dtype=int, device=image.device
+    )
+    crop_t_img = torch.eye(3, device=image.device)
+    crop_t_img[:2, 2] = torch.tensor([-ox, -oy], device=image.device)
+    ret = {"image": image, "corners_hw": corners_hw, "transform": crop_t_img}
     return ret
 
 
