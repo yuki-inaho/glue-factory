@@ -77,7 +77,7 @@ class DoppelgangersSplit(torch.utils.data.Dataset):
             "name": "/".join([name0, name1]),
             "scene": name0.split("/")[0],
             "has_overlap": has_overlap,
-            "num_matches": num_matches,
+            "num_sift_matches": num_matches,
         }
 
         if self.conf.load_images:
@@ -109,7 +109,7 @@ class DoppelgangersSplit(torch.utils.data.Dataset):
                 data["overlap"][1, 0] = 1.0
             data["idx"] = idx
             data.pop("has_overlap")
-            data.pop("num_matches")
+            data.pop("num_sift_matches")
         return data
 
     def __len__(self):
