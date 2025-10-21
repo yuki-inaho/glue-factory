@@ -652,6 +652,28 @@ class Trainer:
             tot_n_samples,
         )
 
+    def log_data_stats(
+        self, writer: Writer, it: int, scene_num_samples: dict[str, int], split: str
+    ) -> str:
+        tot_n_samples = self.current_it
+
+        if len(scene_num_samples) == 0:
+            return
+
+        writer.add_scalar(
+            f"{split}_data/num_scenes", len(scene_num_samples), tot_n_samples
+        )
+        writer.add_scalar(
+            f"{split}_data/avg_frames_per_scene",
+            np.mean(list(scene_num_samples.values())),
+            tot_n_samples,
+        )
+        writer.add_scalar(
+            f"{split}_data/min_frames_per_scene",
+            np.min(list(scene_num_samples.values())),
+            tot_n_samples,
+        )
+
     # ------------------------------------------------------------------------
     # Step functions (train, eval, visualize, ...)
     # ------------------------------------------------------------------------
@@ -775,6 +797,7 @@ class Trainer:
         train_iter = iter(dataloader)
         self.step_timer.hard_reset()
         self.optimizer.zero_grad()
+        scene_num_samples = collections.defaultdict(int)
         for it in range(len(dataloader)):
             if max_iters is not None and it >= max_iters:
                 logger.info(
@@ -782,6 +805,9 @@ class Trainer:
                 )
                 break
             data = next(train_iter)
+            if "scene" in data:
+                for scene_id in data["scene"]:
+                    scene_num_samples[scene_id] += 1
             if self.rank == 0 and it == 0 and self.epoch == 0:
                 # Log a single batch of data
                 misc.print_summary(data)
@@ -832,6 +858,9 @@ class Trainer:
                     {**train_loss_metrics, **pr_metrics},
                     extra_str=time_and_mem_str,
                 )
+
+                self.log_data_stats(writer, it, scene_num_samples, split="training")
+
                 train_loss_metrics.clear()  # Reset training loss aggregators
                 pr_metrics.clear()  # Reset PR metrics
 
@@ -1038,9 +1067,6 @@ def scale_by_device_count(
     )
     if "train_batch_size" in data_conf and not batch_size_per_gpu:
         data_conf.train_batch_size = int(data_conf.train_batch_size / num_gpus)
-    if "num_workers" in data_conf:
-        # We always scale the workers
-        data_conf.num_workers = int((data_conf.num_workers + num_gpus - 1) / num_gpus)
     return data_conf
 
 
