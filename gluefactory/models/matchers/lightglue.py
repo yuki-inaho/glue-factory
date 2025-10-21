@@ -241,24 +241,57 @@ class TransformerLayer(nn.Module):
         desc1,
         encoding0,
         encoding1,
+        cross_encoding0: torch.Tensor | None = None,
+        cross_encoding1: torch.Tensor | None = None,
         mask0: Optional[torch.Tensor] = None,
         mask1: Optional[torch.Tensor] = None,
     ):
         if mask0 is not None and mask1 is not None:
-            return self.masked_forward(desc0, desc1, encoding0, encoding1, mask0, mask1)
+            return self.masked_forward(
+                desc0,
+                desc1,
+                encoding0,
+                encoding1,
+                cross_encoding0,
+                cross_encoding1,
+                mask0,
+                mask1,
+            )
         else:
             desc0 = self.self_attn(desc0, encoding0)
             desc1 = self.self_attn(desc1, encoding1)
-            return self.cross_attn(desc0, desc1)
+            return self.cross_attn(
+                desc0,
+                desc1,
+                mask=None,
+                encoding0=cross_encoding0,
+                encoding1=cross_encoding1,
+            )
 
     # This part is compiled and allows padding inputs
-    def masked_forward(self, desc0, desc1, encoding0, encoding1, mask0, mask1):
+    def masked_forward(
+        self,
+        desc0,
+        desc1,
+        encoding0,
+        encoding1,
+        cross_encoding0,
+        cross_encoding1,
+        mask0,
+        mask1,
+    ):
         mask = mask0 & mask1.transpose(-1, -2)
         mask0 = mask0 & mask0.transpose(-1, -2)
         mask1 = mask1 & mask1.transpose(-1, -2)
         desc0 = self.self_attn(desc0, encoding0, mask0)
         desc1 = self.self_attn(desc1, encoding1, mask1)
-        return self.cross_attn(desc0, desc1, mask)
+        return self.cross_attn(
+            desc0,
+            desc1,
+            mask=mask,
+            encoding0=cross_encoding0,
+            encoding1=cross_encoding1,
+        )
 
 
 def sigmoid_log_double_softmax(
