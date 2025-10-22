@@ -52,7 +52,10 @@ class DoppelgangersPipeline(eval_pipeline.EvalPipeline):
     default_x: str | None = "score"
     default_y: str | None = "label"
 
-    optional_export_keys = []
+    optional_export_keys = [
+        "matchability0",
+        "matchability1",
+    ]
 
     def _init(self, conf):
         self.export_keys += [conf.eval.score_key]

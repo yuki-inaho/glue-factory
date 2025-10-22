@@ -182,6 +182,22 @@ class KeypointScoresPlot:
             )
 
 
+class MatchabilityScoresPlot:
+    plot_name = "matchability_scores"
+    required_keys = ["keypoints0", "keypoints1", "matchability0", "matchability1"]
+
+    def __init__(self, fig, axes, data, preds):
+        for i, name in enumerate(preds):
+            pred = preds[name]
+            kp0, kp1 = pred["keypoints0"][0], pred["keypoints1"][0]
+            sc0, sc1 = pred["matchability0"][0], pred["matchability1"][0]
+            viz2d.plot_keypoints(
+                [kp0, kp1],
+                axes=axes[i],
+                colors=[viz2d.cm_RdGn(sc0), viz2d.cm_RdGn(sc1)],
+            )
+
+
 class HeatmapPlot:
     plot_name = "heatmaps"
     required_keys = ["heatmap0", "heatmap1"]
