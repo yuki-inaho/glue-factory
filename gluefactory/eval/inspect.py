@@ -58,6 +58,7 @@ if __name__ == "__main__":
         for k, v in s.items():
             summaries[k][name] = v
 
+    pprint(summaries)
     plt.close("all")
 
     argvars = vars(args)
