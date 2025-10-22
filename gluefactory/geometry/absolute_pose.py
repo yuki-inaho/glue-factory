@@ -1,8 +1,8 @@
 import kornia
 import torch
-from kornia.geometry.calibration.pnp import _mean_isotropic_scale_normalize
 from torch import Tensor
 
+from ..utils import misc
 from . import transforms as gtr
 from .reconstruction import Pose
 
@@ -30,26 +30,29 @@ def _mean_isotropic_scale_normalize(
     scale = scale[:, None]  # B x 1
 
     norm_t_w = (
-        torch.cat([kornia.utils.eye_like(D_int, points), -x_mean], axis=-2) * scale
+        torch.cat(
+            [kornia.utils.eye_like(D_int, points), -x_mean.transpose(-1, -2)], dim=-1
+        )
+        * scale[..., None]
     )
 
-    last_col = torch.cat(
-        [torch.zeros_like(x_mean), torch.ones_like(x_mean[..., :1])], axis=-1
-    ).transpose(
-        -1, -2
-    )  # Bx(D+1)x1
+    last_row = torch.cat(
+        [torch.zeros_like(x_mean), torch.ones_like(x_mean[..., :1])], dim=-1
+    )
     norm_t_w = torch.cat(
-        [norm_t_w, last_col],
-        axis=-1,
+        [norm_t_w, last_row],
+        dim=-2,
     )  # Bx(D+1)x(D+1)
 
     points_norm = kornia.geometry.linalg.transform_points(norm_t_w, points)  # BxNxD
     return (points_norm, norm_t_w)
 
 
-def pnp_dlt(p3d_w: Tensor, p2d_c: Tensor) -> Pose:
+@misc.AMP_CUSTOM_FWD_F32
+def pnp_dlt(p3d_w: Tensor, p2d_c: Tensor, weights: Tensor | None = None) -> Pose:
     # p3d_w: (B, N, 3) - 3D points in world coordinates
     # p2d_c: (B, N, 2) - 2D points in camera coordinates (normalized)
+    # weights: (B, N) - weights for each point correspondence
     B, N = p3d_w.shape[:2]
 
     p3d_w_norm, world_transform_norm = _mean_isotropic_scale_normalize(p3d_w)
@@ -72,6 +75,10 @@ def pnp_dlt(p3d_w: Tensor, p2d_c: Tensor) -> Pose:
         dim=-1,
     )
 
+    if weights is not None:
+        weights = weights.repeat_interleave(2, dim=1).sqrt()  # (B, 2N)
+        system = system * weights[..., None]  # Apply weights to the system
+
     # Getting the solution vectors.
     _, _, v = torch.svd(system)
     solution = v[..., -1]
@@ -87,7 +94,6 @@ def pnp_dlt(p3d_w: Tensor, p2d_c: Tensor) -> Pose:
     )
     # Creating solution_4x4
     solution_4x4 = torch.cat([solution, last_row], dim=-2)
-    print(solution_4x4)
 
     # De-normalizing the solution
     intermediate = torch.bmm(solution_4x4, world_transform_norm)
