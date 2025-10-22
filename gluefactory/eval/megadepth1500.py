@@ -34,6 +34,9 @@ class MegaDepth1500Pipeline(eval_pipeline.RelativePosePipeline):
         "eval": eval_pipeline.RelativePosePipeline.default_conf["eval"],
     }
 
+    default_x: str = "gt_match_precision@3px"
+    default_y: str = "gt_match_recall@3px"
+
     def _init(self, conf):
         if not (settings.DATA_PATH / "megadepth1500").exists():
             logger.info("Downloading the MegaDepth-1500 dataset.")
