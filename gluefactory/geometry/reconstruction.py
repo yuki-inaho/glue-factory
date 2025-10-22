@@ -313,8 +313,8 @@ class Camera(tensor.TensorWrapper, tensor_only=False, nocast=True):
         else:
             raise NotImplementedError(model)
 
-        data = np.r_[camera["width"], camera["height"], fx, fy, cx, cy, params]
-        return cls(data)
+        data_ = np.r_[camera["width"], camera["height"], fx, fy, cx, cy, params]
+        return cls(torch.from_numpy(data_))
 
     @classmethod
     def from_pycolmap(cls, camera):
