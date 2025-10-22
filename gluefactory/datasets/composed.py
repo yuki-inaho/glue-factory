@@ -4,10 +4,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from gluefactory.geometry.reconstruction import Camera
 from gluefactory.utils import misc, preprocess
 
 from . import get_dataset
+from .augmentations import augmentations
 from .base_dataset import BaseDataset
 
 
@@ -17,6 +17,7 @@ class ComposedDataset(BaseDataset):
         "preprocessing": preprocess.ImagePreprocessor.default_conf,
         "weights": None,
         "target_length": "min",  # min, max, <dataset_name>, number
+        "photometric": {"name": "identity", "p": 0.75},
     }
 
     def _init(self, conf):
@@ -37,6 +38,9 @@ class ComposedSplit(torch.utils.data.Dataset):
 
         self.weights = conf.get(f"{split}_weights", conf.get("weights", None))
         self.preprocessor = preprocess.ImagePreprocessor(conf.preprocessing)
+
+        augmentor_name = "identity" if split != "train" else conf.photometric.name
+        self.photometric_augmentor = augmentations[augmentor_name](conf.photometric)
 
         target_length = conf.get(f"{split}_target_length", conf.target_length)
         if self.weights is not None:
@@ -94,6 +98,9 @@ class ComposedSplit(torch.utils.data.Dataset):
 
         for i, view in enumerate(misc.iterelements(element)):
             element[f"view{i}"].update(self.preprocessor(view["image"]))
+            element[f"view{i}"]["image"] = self.photometric_augmentor(
+                element[f"view{i}"]["image"].permute(1, 2, 0), return_tensor=True
+            )
             if "depth" in view:
                 element[f"view{i}"]["depth"] = self.preprocessor(
                     view["depth"], interpolation="nearest"
