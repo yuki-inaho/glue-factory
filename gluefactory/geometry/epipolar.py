@@ -18,16 +18,16 @@ def T_to_F(
 
 
 def E_to_F(cam0: reconstruction.Camera, cam1: reconstruction.Camera, E: torch.Tensor):
-    assert cam0._data.shape[-1] == 6, "only pinhole cameras supported"
-    assert cam1._data.shape[-1] == 6, "only pinhole cameras supported"
+    assert cam0.data_.shape[-1] == 6, "only pinhole cameras supported"
+    assert cam1.data_.shape[-1] == 6, "only pinhole cameras supported"
     K0 = cam0.calibration_matrix()
     K1 = cam1.calibration_matrix()
     return K1.inverse().transpose(-1, -2) @ E @ K0.inverse()
 
 
 def F_to_E(cam0: reconstruction.Camera, cam1: reconstruction.Camera, F: torch.Tensor):
-    assert cam0._data.shape[-1] == 6, "only pinhole cameras supported"
-    assert cam1._data.shape[-1] == 6, "only pinhole cameras supported"
+    assert cam0.data_.shape[-1] == 6, "only pinhole cameras supported"
+    assert cam1.data_.shape[-1] == 6, "only pinhole cameras supported"
     K0 = cam0.calibration_matrix()
     K1 = cam1.calibration_matrix()
     return K1.transpose(-1, -2) @ F @ K0
@@ -94,8 +94,8 @@ def generalized_epi_dist(
         else:
             return sym_epipolar_distance(p0, p1, E, squared=False)
     else:
-        assert cam0._data.shape[-1] == 6
-        assert cam1._data.shape[-1] == 6
+        assert cam0.data_.shape[-1] == 6
+        assert cam1.data_.shape[-1] == 6
         F = T_to_F(cam0, cam1, T_0to1)
         if all:
             return sym_epipolar_distance_all(kpts0, kpts1, F)
