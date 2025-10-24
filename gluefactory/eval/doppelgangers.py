@@ -37,7 +37,7 @@ class DoppelgangersPipeline(eval_pipeline.EvalPipeline):
         "eval": {"score_key": "overlaps"},
     }
 
-    export_keys = [
+    export_keys = (
         "keypoints0",
         "keypoints1",
         "keypoint_scores0",
@@ -46,16 +46,16 @@ class DoppelgangersPipeline(eval_pipeline.EvalPipeline):
         "matches1",
         "matching_scores0",
         "matching_scores1",
-    ]
+    )
 
     # For plotting
     default_x: str | None = "score"
     default_y: str | None = "label"
 
-    optional_export_keys = [
+    optional_export_keys = (
         "matchability0",
         "matchability1",
-    ]
+    )
 
     def _init(self, conf):
         self.export_keys += [conf.eval.score_key]

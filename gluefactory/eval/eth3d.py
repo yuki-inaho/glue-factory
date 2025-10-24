@@ -62,17 +62,17 @@ class ETH3DPipeline(eval_pipeline.EvalPipeline):
         "eval": {"plot_methods": [], "plot_line_methods": [], "eval_lines": False},
     }
 
-    export_keys = [
+    export_keys = (
         "gt_matches0",
         "matches0",
         "matching_scores0",
-    ]
+    )
 
-    optional_export_keys = [
+    optional_export_keys = (
         "gt_line_matches0",
         "line_matches0",
         "line_matching_scores0",
-    ]
+    )
 
     def get_dataloader(self, data_conf=None):
         data_conf = data_conf if data_conf is not None else self.default_conf["data"]

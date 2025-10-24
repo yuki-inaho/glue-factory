@@ -66,8 +66,8 @@ class EvalPipeline:
     }
     eval_data_conf = {}
 
-    export_keys = []
-    optional_export_keys = []
+    export_keys = ()
+    optional_export_keys = ()
 
     default_x: str | None = None  # Default x-axis for inspection plots
     default_y: str | None = None  # Default y-axis for inspection plots
@@ -81,6 +81,8 @@ class EvalPipeline:
         self.default_conf = OmegaConf.create(self.default_conf)
         self.conf = OmegaConf.merge(EvalPipeline.default_conf, self.default_conf, conf)
         self.__class__.num_samples = self.conf.num_samples
+        self.export_keys = list(self.export_keys)
+        self.optional_export_keys = list(self.optional_export_keys)
         self._init(self.conf)
 
     def _init(self, conf):
@@ -172,7 +174,7 @@ class RelativePosePipeline(EvalPipeline):
 
     main_metric = "rel_pose_error_mAA"
 
-    export_keys = [
+    export_keys = (
         "keypoints0",
         "keypoints1",
         "keypoint_scores0",
@@ -181,8 +183,8 @@ class RelativePosePipeline(EvalPipeline):
         "matches1",
         "matching_scores0",
         "matching_scores1",
-    ]
-    optional_export_keys = []
+    )
+    optional_export_keys = ()
 
     # Add custom evals here (dataset specific)
     eval_hooks: Sequence[Callable[[Any, Any], dict[str, float]]] = ()

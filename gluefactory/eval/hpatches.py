@@ -37,7 +37,7 @@ class HPatchesPipeline(eval_pipeline.EvalPipeline):
             "ransac_th": -1.0,  # -1 runs a bunch of thresholds and selects the best
         },
     }
-    export_keys = [
+    export_keys = (
         "keypoints0",
         "keypoints1",
         "keypoint_scores0",
@@ -46,9 +46,9 @@ class HPatchesPipeline(eval_pipeline.EvalPipeline):
         "matches1",
         "matching_scores0",
         "matching_scores1",
-    ]
+    )
 
-    optional_export_keys = [
+    optional_export_keys = (
         "lines0",
         "lines1",
         "orig_lines0",
@@ -57,7 +57,7 @@ class HPatchesPipeline(eval_pipeline.EvalPipeline):
         "line_matches1",
         "line_matching_scores0",
         "line_matching_scores1",
-    ]
+    )
 
     def _init(self, conf):
         pass
