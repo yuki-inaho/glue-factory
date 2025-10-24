@@ -13,7 +13,7 @@ from .base_dataset import BaseDataset
 
 class ComposedDataset(BaseDataset):
     default_conf = {
-        "childs": [],
+        "childs": {},  # dict of dataset configurations
         "preprocessing": preprocess.ImagePreprocessor.default_conf,
         "weights": None,
         "target_length": "min",  # min, max, <dataset_name>, number
@@ -22,7 +22,7 @@ class ComposedDataset(BaseDataset):
 
     def _init(self, conf):
         child_confs = conf.childs
-        self.datasets = [get_dataset(d.name)(d) for d in child_confs]
+        self.datasets = [get_dataset(name)(c) for name, c in child_confs.items()]
 
     def get_dataset(self, split: str, epoch: int = 0):
         return ComposedSplit(self.conf, self.datasets, split, epoch)
@@ -34,9 +34,16 @@ class ComposedSplit(torch.utils.data.Dataset):
         self.datasets = [d.get_dataset(split, epoch) for d in datasets]
         self.sizes = np.array([len(d) for d in self.datasets])
 
-        self.dataset_names = [d.conf.name for d in self.datasets]
+        self.dataset_names = [name for name in conf.childs.keys()]
 
-        self.weights = conf.get(f"{split}_weights", conf.get("weights", None))
+        self.weights = {
+            c.get(f"{split}_weight", c.get("weight", None))
+            for c in conf.childs.values()
+        }
+        if all(w is None for w in self.weights):
+            self.weights = None
+        else:
+            self.weights = np.array([1.0 if w is None else w for w in self.weights])
         self.preprocessor = preprocess.ImagePreprocessor(conf.preprocessing)
 
         augmentor_name = "identity" if split != "train" else conf.photometric.name
