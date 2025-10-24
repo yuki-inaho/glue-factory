@@ -24,7 +24,7 @@ class MegaDepth1500Pipeline(eval_pipeline.RelativePosePipeline):
             "preprocessing": {
                 "side": "long",
             },
-            "num_workers": 4,
+            "num_workers": None,
         },
         "model": {
             "ground_truth": {
