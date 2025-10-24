@@ -51,6 +51,7 @@ def compose_loss(loss_dict: LossMetrics, compose_str: str) -> torch.Tensor:
     return loss
 
 
+@torch.compiler.set_stance("force_eager")
 @torch.no_grad()
 def run_evaluation(
     model: BaseModel | torch.nn.parallel.DistributedDataParallel,
@@ -165,6 +166,7 @@ class Trainer:
         "num_devices": 0,  # 0 means sequential.
         "compile": None,  # Compilation mode for the model. [None, default, ...]
         "profile": None,  # Profile the training with PyTorch profiler (# prof steps)
+        "profile_every_epoch": None,  # Profile every N epochs, None means only first
         "record_memory": None,  # Record memory usage during training (# record steps)
         "log_it": False,  # Log tensorboard on iteration (default is num_samples)
         "print_arch": False,  # Print the model architecture
@@ -453,7 +455,7 @@ class Trainer:
                 skip_first=10,
             ),
             on_trace_ready=experiments.tensorboard_trace_handler(
-                str(output_dir), use_gzip=not store_raw_trace
+                str(output_dir), use_gzip=not store_raw_trace, epoch=self.epoch
             ),
             record_shapes=False,
             profile_memory=False,
@@ -790,7 +792,13 @@ class Trainer:
     ):
         if self.rank == 0:
             self.log_data(writer, 0, dataloader, "training")
-        do_profile = self.conf.profile and self.epoch == 0
+        do_profile = self.conf.profile
+        if self.conf.profile_every_epoch is not None:
+            do_profile = do_profile and (
+                (self.epoch % self.conf.profile_every_epoch) == 0
+            )
+        else:
+            do_profile = do_profile and (self.epoch == 0)
         profiler = self.construct_profiler(output_dir) if do_profile else None
         train_loss_metrics = collections.defaultdict(tools.AverageMetric)
         pr_metrics = collections.defaultdict(tools.PRMetric)

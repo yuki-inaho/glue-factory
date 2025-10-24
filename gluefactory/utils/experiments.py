@@ -231,7 +231,10 @@ def save_experiment(
 
 # Adaptation of torch.profiler.tensorboard_trace_handler
 def tensorboard_trace_handler(
-    dir_name: str, worker_name: Optional[str] = None, use_gzip: bool = False
+    dir_name: str,
+    worker_name: Optional[str] = None,
+    use_gzip: bool = False,
+    epoch: int | None = None,
 ):
     """
     Outputs tracing files to directory of ``dir_name``, then that directory can be
@@ -264,6 +267,8 @@ def tensorboard_trace_handler(
                 raise RuntimeError("Can't create directory: " + dir_name) from e
         if not worker_name:
             worker_name = f"{socket.gethostname()}_{os.getpid()}"
+        if epoch is not None:
+            worker_name += f"_epoch{epoch}"
         # Use nanosecond here to avoid naming clash when exporting the trace
         file_name = f"{worker_name}.{time.time_ns()}.pt.trace.json"
         file_path = os.path.join(dir_name, file_name)
