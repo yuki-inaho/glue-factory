@@ -86,6 +86,9 @@ class MixedExtractor(BaseModel):
         return pred
 
     def interpolate_descriptors(self, fmap, kpts):
+        if fmap.ndim == 3 and fmap.shape[-2] == kpts.shape[-2]:
+            # Already interpolated
+            return fmap
         return (
             F.grid_sample(
                 fmap,
