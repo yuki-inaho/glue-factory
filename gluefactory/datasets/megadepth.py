@@ -134,7 +134,6 @@ class _MegaDepthSplit(torch.utils.data.Dataset):
         self.depths = {}
         self.poses = {}
         self.intrinsics = {}
-        self.valid = {}
 
         # load metadata
         self.info_dir = self.root / self.conf.info_dir
