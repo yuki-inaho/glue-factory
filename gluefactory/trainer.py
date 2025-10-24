@@ -532,7 +532,7 @@ class Trainer:
             torch.cuda.memory._record_memory_history(enabled="all")
         elif it == offset + self.conf.record_memory:
             # Record memory usage every self.conf.record_memory iterations
-            snapshot_path = output_dir / f"memory_snapshot.json"
+            snapshot_path = output_dir / f"memory_snapshot_epoch{self.epoch}.json"
             torch.cuda.memory._dump_snapshot(snapshot_path)
 
     def log_train(
@@ -886,7 +886,8 @@ class Trainer:
                 raise NotImplementedError()
 
             del pred, data, loss_metrics
-            torch.cuda.empty_cache()  # should be cleared at the first iter
+            if it == 0:
+                torch.cuda.empty_cache()  # should be cleared at the first iter
             self.step_timer.reset()
         self.optimizer.zero_grad()
 
