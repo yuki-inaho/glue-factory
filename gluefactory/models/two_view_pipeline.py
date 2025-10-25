@@ -94,16 +94,16 @@ class TwoViewPipeline(BaseModel):
             # Convert triplet to three pairs (inplace because easier)
             self.triplet_to_pairs(data)
             self.triplet_to_pairs(pred)
+
+        if self.conf.ground_truth.name and self.conf.run_gt_in_forward:
+            gt_pred = self.ground_truth({**data, **pred})
+            pred.update({f"gt_{k}": v for k, v in gt_pred.items()})
         if self.conf.matcher.name:
             pred = {**pred, **self.matcher({**data, **pred})}
         if self.conf.filter.name:
             pred = {**pred, **self.filter({**data, **pred})}
         if self.conf.solver.name:
             pred = {**pred, **self.solver({**data, **pred})}
-
-        if self.conf.ground_truth.name and self.conf.run_gt_in_forward:
-            gt_pred = self.ground_truth({**data, **pred})
-            pred.update({f"gt_{k}": v for k, v in gt_pred.items()})
         return pred
 
     def loss(self, pred, data):
