@@ -101,6 +101,10 @@ def gt_matches_from_pose_depth(
         m0 = torch.where((~valid0) & exclude0, types.UNMATCHED_FEATURE, m0)
         m1 = torch.where((~valid1) & exclude1, types.UNMATCHED_FEATURE, m1)
 
+    c0_t_w = data["view0"]["T_w2cam"]
+    c1_t_w = data["view1"]["T_w2cam"]
+    d0 = torch.where(valid0, d0, torch.zeros_like(d0))
+    d1 = torch.where(valid1, d1, torch.zeros_like(d1))
     return {
         "assignment": positive,
         "reward": (dist < pos_th**2).float() - (epi_dist > neg_th).float(),
@@ -108,13 +112,15 @@ def gt_matches_from_pose_depth(
         "matches1": m1,
         "matching_scores0": (m0 > -1).float(),
         "matching_scores1": (m1 > -1).float(),
-        "depth_keypoints0": torch.where(valid0, d0, torch.zeros_like(d0)),
-        "depth_keypoints1": torch.where(valid1, d1, torch.zeros_like(d1)),
+        "depth_keypoints0": d0,
+        "depth_keypoints1": d1,
         "proj_0to1": kp0_1,
         "proj_1to0": kp1_0,
         "visible0": visible0,
         "visible1": visible1,
         "has_overlap": has_overlap,
+        "xyz_keypoints0": c0_t_w.inv() @ (camera0.image2cam(kp0) * d0.unsqueeze(-1)),
+        "xyz_keypoints1": c1_t_w.inv() @ (camera1.image2cam(kp1) * d1.unsqueeze(-1)),
     }
 
 
