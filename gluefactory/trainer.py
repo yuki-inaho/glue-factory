@@ -740,8 +740,8 @@ class Trainer:
                     if detected_anomaly:
                         raise RuntimeError("Detected anomaly in training.")
                 if do_update:
+                    self.scaler.unscale_(self.optimizer)
                     if self.conf.get("clip_grad", None):
-                        self.scaler.unscale_(self.optimizer)
                         try:
                             torch.nn.utils.clip_grad_norm_(
                                 self.model.parameters(),
@@ -851,12 +851,6 @@ class Trainer:
 
             # Log training metrics (loss, ...) and hardware usage
             if do_log and self.rank == 0:
-                if "l2/grad_norm" in train_loss_metrics:
-                    writer.add_scalar(
-                        "l2/grad_norm",
-                        train_loss_metrics.pop("l2/grad_norm").compute(),
-                        self.current_it,
-                    )
                 time_and_mem_str = self.log_time_and_memory(
                     writer, it, dataloader.batch_size
                 )
