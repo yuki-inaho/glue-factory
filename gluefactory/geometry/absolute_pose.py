@@ -8,22 +8,29 @@ from .reconstruction import Pose
 
 
 def _mean_isotropic_scale_normalize(
-    points: torch.Tensor, eps: float = 1e-8
-) -> tuple[torch.Tensor, Pose]:
+    points: torch.Tensor,
+    eps: float = 1e-8,
+    weights: torch.Tensor | None = None,
+    return_pose: bool = False,
+) -> tuple[torch.Tensor, Pose | torch.Tensor]:
     r"""Normalize points. Avoid inplace operations.
 
     Args:
        points : Tensor containing the points to be normalized with shape :math:`(B, N, D)`.
        eps : Small value to avoid division by zero error.
+       weights : Optional tensor containing weights for each point with shape :math:`(B, N)`.
 
     Returns:
        Tuple containing the normalized points in the shape :math:`(B, N, D)` and the transformation matrix
        in the shape :math:`(B, D+1, D+1)`.
 
     """
-    x_mean = torch.mean(points, dim=1, keepdim=True)  # Bx1xD
-    scale = (points - x_mean).norm(dim=-1, p=2).mean(dim=-1)  # B
-
+    if weights is not None:
+        x_mean = misc.wmean(points, weights[..., None], dim=1, keepdim=True)  # Bx1xD
+        scale = misc.wmean((points - x_mean).norm(dim=-1, p=2), weights, dim=-1)  # B
+    else:
+        x_mean = torch.mean(points, dim=1, keepdim=True)  # Bx1xD
+        scale = (points - x_mean).norm(dim=-1, p=2).mean(dim=-1)  # B
     D_int = points.shape[-1]
     D_float = torch.tensor(points.shape[-1], dtype=torch.float64, device=points.device)
     scale = torch.sqrt(D_float) / (scale + eps)  # B
@@ -39,13 +46,16 @@ def _mean_isotropic_scale_normalize(
     last_row = torch.cat(
         [torch.zeros_like(x_mean), torch.ones_like(x_mean[..., :1])], dim=-1
     )
-    norm_t_w = torch.cat(
+    norm_T_w = torch.cat(
         [norm_t_w, last_row],
         dim=-2,
     )  # Bx(D+1)x(D+1)
 
-    points_norm = kornia.geometry.linalg.transform_points(norm_t_w, points)  # BxNxD
-    return (points_norm, norm_t_w)
+    points_norm = kornia.geometry.linalg.transform_points(norm_T_w, points)  # BxNxD
+    if return_pose:
+        return (points_norm, Pose.from_projection_matrix(norm_T_w[:, :-1]))
+    else:
+        return (points_norm, norm_T_w)
 
 
 @misc.AMP_CUSTOM_FWD_F32
