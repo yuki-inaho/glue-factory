@@ -123,7 +123,7 @@ class ComposedSplit(torch.utils.data.Dataset):
 
         fig, ax = plt.subplots()
 
-        dataset_names = [d.conf.name for d in self.datasets]
+        dataset_names = self.dataset_names
         ax.bar(dataset_names, self.sizes, alpha=0.5, label="sampled")
         ax.bar(
             dataset_names, [len(d) for d in self.datasets], alpha=0.5, label="original"
@@ -133,11 +133,11 @@ class ComposedSplit(torch.utils.data.Dataset):
 
         figures["dataset_sizes"] = fig
 
-        for d in self.datasets:
+        for name, d in zip(self.dataset_names, self.datasets):
             if hasattr(d, "stats"):
                 dmetrics, dfigures = d.stats()
-                metrics.update({f"{d.conf.name}/{k}": v for k, v in dmetrics.items()})
-                figures.update({f"{d.conf.name}/{k}": v for k, v in dfigures.items()})
+                metrics.update({f"{name}/{k}": v for k, v in dmetrics.items()})
+                figures.update({f"{name}/{k}": v for k, v in dfigures.items()})
 
         return metrics, figures
 
