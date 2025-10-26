@@ -78,6 +78,15 @@ class TensorWrapper(TensorClass, tensor_only=True):
         return self.data_.device
 
     @classmethod
+    def where(cls, condition, input, other, *, out=None):
+        if not (isinstance(input, cls) and isinstance(other, cls)):
+            raise ValueError(f"Incorrect inputs: {input}, {other}.")
+        if out is not None and isinstance(out, cls):
+            out = out.data_
+        ret = torch.where(condition.unsqueeze(-1), input.data_, other.data_, out=out)
+        return cls(ret)
+
+    @classmethod
     def __torch_function__(
         cls,
         func: Callable,
@@ -87,4 +96,6 @@ class TensorWrapper(TensorClass, tensor_only=True):
     ):
         if func == torch.concat:
             func = torch.cat
+        if func == torch.where:
+            func = cls.where
         return getattr(cls, func.__name__)(*args, **(kwargs or {}))
