@@ -85,7 +85,8 @@ def run_evaluation(
             losses, metrics = model.loss_metrics(pred, data)
             pr_metrics_i = model.pr_metrics(pred, data)
             losses, metrics, pr_metrics_i = [
-                misc.batch_to_device(x, "cpu") for x in (losses, metrics, pr_metrics_i)
+                misc.batch_to_device(x, "cpu", non_blocking=False)
+                for x in (losses, metrics, pr_metrics_i)
             ]
             if is_ddp:
                 # Gather all losses and metrics
@@ -170,6 +171,9 @@ class Trainer:
         "record_memory": None,  # Record memory usage during training (# record steps)
         "log_it": False,  # Log tensorboard on iteration (default is num_samples)
         "print_arch": False,  # Print the model architecture
+        "stdout_metrics": [
+            "loss/total"
+        ],  # List of metrics to print to stdout (None=all)
         "detect_anomaly": False,  # Enable anomaly detection
         "matmul_precision": None,  # Set torch.matmul precision [None, highest, high, medium, low]
         "gradient_accumulation_steps": 1,  # Accumulate gradients over N steps
