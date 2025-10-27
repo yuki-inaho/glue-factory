@@ -130,7 +130,12 @@ class Attention(nn.Module):
 
 class SelfBlock(nn.Module):
     def __init__(
-        self, embed_dim: int, num_heads: int, flash: bool = False, bias: bool = True
+        self,
+        embed_dim: int,
+        num_heads: int,
+        flash: bool = False,
+        bias: bool = True,
+        dropout: float = 0.0,
     ) -> None:
         super().__init__()
         self.embed_dim = embed_dim
@@ -147,6 +152,11 @@ class SelfBlock(nn.Module):
             nn.Linear(2 * embed_dim, embed_dim),
         )
 
+        if dropout > 1.0e-4:
+            self.dropout = nn.Dropout(dropout)
+        else:
+            self.dropout = nn.Identity()
+
     def forward(
         self,
         x: torch.Tensor,
@@ -160,12 +170,17 @@ class SelfBlock(nn.Module):
         k = apply_cached_rotary_emb(encoding, k)
         context = self.inner_attn(q, k, v, mask=mask)
         message = self.out_proj(context.transpose(1, 2).flatten(start_dim=-2))
-        return x + self.ffn(torch.cat([x, message], -1))
+        return x + self.dropout(self.ffn(torch.cat([x, message], -1)))
 
 
 class CrossBlock(nn.Module):
     def __init__(
-        self, embed_dim: int, num_heads: int, flash: bool = False, bias: bool = True
+        self,
+        embed_dim: int,
+        num_heads: int,
+        flash: bool = False,
+        bias: bool = True,
+        dropout: float = 0.0,
     ) -> None:
         super().__init__()
         self.heads = num_heads
@@ -185,6 +200,11 @@ class CrossBlock(nn.Module):
             self.flash = Attention(True)
         else:
             self.flash = None
+
+        if dropout > 1.0e-4:
+            self.dropout = nn.Dropout(dropout)
+        else:
+            self.dropout = nn.Identity()
 
     def map_(self, func: Callable, x0: torch.Tensor, x1: torch.Tensor):
         return func(x0), func(x1)
@@ -224,8 +244,8 @@ class CrossBlock(nn.Module):
                 m0, m1 = m0.nan_to_num(), m1.nan_to_num()
         m0, m1 = self.map_(lambda t: t.transpose(1, 2).flatten(start_dim=-2), m0, m1)
         m0, m1 = self.map_(self.to_out, m0, m1)
-        x0 = x0 + self.ffn(torch.cat([x0, m0], -1))
-        x1 = x1 + self.ffn(torch.cat([x1, m1], -1))
+        x0 = x0 + self.dropout(self.ffn(torch.cat([x0, m0], -1)))
+        x1 = x1 + self.dropout(self.ffn(torch.cat([x1, m1], -1)))
         return x0, x1
 
 
