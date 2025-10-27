@@ -109,7 +109,9 @@ def run_export(feature_file, scene, args):
             "preprocessing": {
                 "resize": resize,
                 "side": "long",
+                "antialias": False,
             },
+            "squeeze_single_view": True,
             "batch_size": 1,
             "num_workers": args.num_workers,
             "read_depth": True,
@@ -141,10 +143,9 @@ def run_export(feature_file, scene, args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--export_prefix", type=str, default="")
-    parser.add_argument("--method", type=str, default="sp")
+    parser.add_argument("method", type=str)
     parser.add_argument("--scenes", type=str, default=None)
-    parser.add_argument("--num_workers", type=int, default=0)
+    parser.add_argument("--num_workers", type=int, default=None)
     parser.add_argument("--export_sparse_depth", action="store_true")
     args = parser.parse_args()
 

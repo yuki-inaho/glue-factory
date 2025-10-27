@@ -62,6 +62,7 @@ class MegaDepth(base_dataset.BaseDataset):
         "read_image": True,
         "grayscale": False,
         "allow_distractors": False,
+        "squeeze_single_view": False,
         "preprocessing": preprocess.ImagePreprocessor.default_conf,
         "p_rotate": 0.0,  # probability to rotate image by +/- 90°
         "reseed": False,
@@ -442,7 +443,7 @@ class _MegaDepthSplit(torch.utils.data.Dataset):
         if overlap is not None:
             data["overlap"] = overlap
 
-        if nviews == 1 and self.conf.get("squeeze_single_view", False):
+        if nviews == 1 and self.conf.squeeze_single_view:
             data = {**data.pop("view0"), **data}
         data["scene"] = scene
         data["idx"] = idx
