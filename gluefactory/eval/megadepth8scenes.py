@@ -27,7 +27,7 @@ class Megadepth8ScenesPipeline(RelativePosePipeline):
             "depth_format": "h5",
             "scene_list": ["megadepth8scenes"],
             "preprocessing": {"side": "long"},
-            "num_workers": 8,
+            "num_workers": None,
         },
         "model": {
             "ground_truth": {

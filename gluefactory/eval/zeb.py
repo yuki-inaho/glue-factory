@@ -33,7 +33,7 @@ class ZeroshotEvaluationBenchmarkPipeline(RelativePosePipeline):
                 "side": "long",
                 "resize": 1024,  # resize to 1024px on the long side
             },
-            "num_workers": 14,
+            "num_workers": None,
         },
         "model": {
             "ground_truth": {
