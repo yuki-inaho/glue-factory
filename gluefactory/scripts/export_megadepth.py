@@ -147,6 +147,7 @@ if __name__ == "__main__":
     parser.add_argument("--scenes", type=str, default=None)
     parser.add_argument("--num_workers", type=int, default=None)
     parser.add_argument("--export_sparse_depth", action="store_true")
+    parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
     export_name = configs[args.method]["name"]
@@ -160,13 +161,12 @@ if __name__ == "__main__":
     if args.scenes is None:
         scenes = [p.name for p in data_root.iterdir() if p.is_dir()]
     else:
-        with open(settings.DATA_PATH / "megadepth" / args.scenes, "r") as f:
-            scenes = f.read().split()
+        scenes = args.scenes.split(",")
     for i, scene in enumerate(scenes):
         print(f"{i} / {len(scenes)}", scene)
         feature_file = export_root / (scene + ".h5")
-        if feature_file.exists() and False:
-            continue
+        if feature_file.exists() and args.overwrite:
+            feature_file.unlink()
         if not (data_root / scene / "images").exists():
             logging.info("Skip " + scene)
             continue
