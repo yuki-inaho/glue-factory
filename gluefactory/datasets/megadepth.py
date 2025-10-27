@@ -377,9 +377,12 @@ class _MegaDepthSplit(torch.utils.data.Dataset):
 
         data = self.preprocessor(img)
         if depth_map is not None:
-            data["depth"] = self.preprocessor(depth_map, interpolation="nearest")[
-                "image"
-            ][0]
+            data["depth"] = self.preprocessor.interpolate(
+                depth_map,
+                data["transform"],
+                data["image"].shape[-2:],
+                mode="nearest",
+            )[0]
         # Scale intrinsics
         data = {
             "name": name,
@@ -444,7 +447,8 @@ class _MegaDepthSplit(torch.utils.data.Dataset):
             data["overlap"] = overlap
 
         if nviews == 1 and self.conf.squeeze_single_view:
-            data = {**data.pop("view0"), **data}
+            view_data = data.pop("view0")
+            data = {**data, **view_data}
         data["scene"] = scene
         data["idx"] = idx
         return data

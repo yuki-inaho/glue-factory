@@ -157,10 +157,12 @@ class PosedImageDataset(base_dataset.BaseDataset, torch.utils.data.Dataset):
             depth = load_depth(
                 self.get_depth_path(scene, name), dformat=self.conf.depth_format
             )
-            data["depth"] = self.preprocessor(
-                depth,
-                interpolation="nearest",
-            )["image"]
+            data["depth"] = self.preprocessor.interpolate(
+                depth[None],
+                data["transform"],
+                data["image"].shape[-2:],
+                mode="nearest",
+            )[0]
             data["valid_depth"] = (data["depth"] > 0).float()
 
             assert data["depth"].shape[-2:] == data["image"].shape[-2:]

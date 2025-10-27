@@ -9,6 +9,9 @@ import torch
 from omegaconf import OmegaConf
 from torch import nn
 
+from ..geometry import transforms as gtr
+from . import misc
+
 
 def get_divisible_wh(w, h, df=None):
     if df is not None:
@@ -29,6 +32,7 @@ class ImagePreprocessor:
         "square_pad": False,
         "add_padding_mask": False,
         "crop_if_short_side": False,
+        "crop_mode": "center",
     }
 
     def __init__(self, conf) -> None:
@@ -41,6 +45,7 @@ class ImagePreprocessor:
         """Resize and preprocess an image, return image and resize scale"""
         h, w = img.shape[-2:]
         size = h, w
+        raw_img = img.clone()
         if self.conf.resize is not None or self.conf.edge_divisible_by is not None:
             if interpolation is None:
                 interpolation = self.conf.interpolation
@@ -74,14 +79,35 @@ class ImagePreprocessor:
             if "valid" in padding_data:
                 data["padding_mask"] = padding_data["valid"]
             data["transform"] = padding_data["transform"] @ data["transform"]
-        elif self.conf.side == "short" and self.conf.crop_if_short_side:
-            crop_data = square_crop(img)
+        elif (
+            self.conf.side == "short"
+            and self.conf.crop_if_short_side
+            and self.conf.square_pad
+        ):
+            crop_data = square_crop(img, mode=self.conf.crop_mode)
             data["image"] = crop_data["image"]
+            data["image_size"] = np.array(crop_data["image"].shape[-2:][::-1])  # w, h
             data["corners_hw"] = crop_data["corners_hw"].numpy()
             data["transform"] = crop_data["transform"] @ data["transform"]
         else:
             data["image"] = img
         return data
+
+    def interpolate(
+        self,
+        img: torch.Tensor,
+        norm_t_img: np.ndarray,
+        target_hw: Tuple[int, int],
+        mode: str = "bilinear",
+    ) -> dict:
+        """Interpolate an image with a given transform to a target size."""
+        return kornia.geometry.transform.warp_perspective(
+            img[None],
+            torch.as_tensor(norm_t_img, device=img.device, dtype=torch.float32)[None],
+            dsize=target_hw,
+            mode=mode,
+            align_corners=False,
+        )[0]
 
     def load_image(self, image_path: Path) -> dict:
         return self(load_image(image_path))
@@ -161,18 +187,24 @@ def square_pad(
 
 def square_crop(
     image: torch.Tensor,
-    center: bool = True,
+    mode: str = "center",
 ) -> dict[str, torch.Tensor]:
     """Crop the image to a square shape."""
     h, w = image.shape[-2:]
     hw = min(h, w)
-    if center:
+    if mode == "random":
+        oy = np.random.randint(0, h - hw + 1)
+        ox = np.random.randint(0, w - hw + 1)
+        image = image[..., oy : oy + hw, ox : ox + hw]
+    elif mode == "center":
         oy = (h - hw) // 2
         ox = (w - hw) // 2
         image = image[..., oy : oy + hw, ox : ox + hw]
-    else:
+    elif mode == "top":
         image = image[..., :hw, :hw]
         ox, oy = 0, 0
+    else:
+        raise ValueError(f"Unknown crop mode {mode}")
     corners_hw = torch.as_tensor(
         [[oy, ox], [oy + hw, ox + hw]], dtype=int, device=image.device
     )

@@ -109,9 +109,12 @@ class ComposedSplit(torch.utils.data.Dataset):
                 element[f"view{i}"]["image"].permute(1, 2, 0), return_tensor=True
             )
             if "depth" in view:
-                element[f"view{i}"]["depth"] = self.preprocessor(
-                    view["depth"], interpolation="nearest"
-                )["image"]
+                element[f"view{i}"]["depth"] = self.preprocessor.interpolate(
+                    view["depth"][None],
+                    element[f"view{i}"]["transform"],
+                    element[f"view{i}"]["image"].shape[-2:],
+                    mode="nearest",
+                )[0]
             if "camera" in view:
                 element[f"view{i}"]["camera"] = view["camera"].compose_image_transform(
                     element[f"view{i}"]["transform"]
@@ -153,20 +156,19 @@ if __name__ == "__main__":
         "preprocessing": {
             "resize": (512, 512),
         },
-        "childs": [
-            {
-                "name": "doppelgangers",
+        "childs": {
+            "doppelgangers": {
                 "root": "doppelgangerspp",
                 "subset": 100,
                 "add_dummy_pose_depth": True,
                 "only_negatives": True,
             },
-            {
+            "megadepth": {
                 "name": "megadepth",
                 "train_num_per_scene": 100,
                 "test_num_per_scene": 10,
             },
-        ],
+        },
         "weights": [0.9, 0.1],
         "target_length": 50,
         "seed": 42,
