@@ -11,7 +11,7 @@ from tqdm import tqdm
 
 from .. import datasets
 from ..models.cache_loader import CacheLoader
-from ..utils import export, misc
+from ..utils import export, misc, tools
 from ..visualization import viz2d
 from . import io, utils
 
@@ -322,6 +322,11 @@ class RelativePosePipeline(EvalPipeline):
         summaries = {}
         for k, v in results.items():
             arr = np.array(v)
+            if k.endswith("pose_error"):
+                thresholds = [5, 10, 20]
+                aucs = tools.AUCMetric(thresholds, elements=v).compute()
+                for i, th in enumerate(thresholds):
+                    summaries[f"{k}@{th}°"] = round(aucs[i], 3)
             if not np.issubdtype(np.array(v).dtype, np.number):
                 continue
             summaries[f"m{k}"] = round(np.mean(arr), 3)
