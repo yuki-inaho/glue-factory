@@ -45,7 +45,6 @@ class ImagePreprocessor:
         """Resize and preprocess an image, return image and resize scale"""
         h, w = img.shape[-2:]
         size = h, w
-        raw_img = img.clone()
         if self.conf.resize is not None or self.conf.edge_divisible_by is not None:
             if interpolation is None:
                 interpolation = self.conf.interpolation
@@ -101,6 +100,9 @@ class ImagePreprocessor:
         mode: str = "bilinear",
     ) -> dict:
         """Interpolate an image with a given transform to a target size."""
+        if self.conf.resize is None and self.conf.edge_divisible_by is None:
+            assert not self.conf.square_pad
+            return img
         return kornia.geometry.transform.warp_perspective(
             img[None],
             torch.as_tensor(norm_t_img, device=img.device, dtype=torch.float32)[None],
