@@ -27,6 +27,7 @@ class MixedExtractor(BaseModel):
     default_conf = {
         "detector": {"name": None},
         "descriptor": {"name": None},
+        "refiner": {"name": None},  # Always runs
         "interpolate_descriptors_from": None,  # field name, str or list
         "fusion_mlp": None,
         "allow_no_detect": False,
@@ -48,6 +49,9 @@ class MixedExtractor(BaseModel):
             self.required_data_keys += ["cache"]
             self.required_cache_keys += ["descriptors"]
 
+        if conf.refiner.name:
+            self.refiner = get_model(conf.refiner.name)(to_ctr(conf.refiner))
+
         self.interpolate_descriptors_from = conf.interpolate_descriptors_from
         if isinstance(self.interpolate_descriptors_from, str):
             self.interpolate_descriptors_from = [self.interpolate_descriptors_from]
@@ -68,6 +72,9 @@ class MixedExtractor(BaseModel):
             pred = data["cache"]
         if self.conf.descriptor.name:
             pred = {**pred, **self.descriptor({**pred, **data})}
+
+        if self.conf.refiner.name:
+            pred = {**pred, **self.refiner({**pred, **data})}
 
         if self.interpolate_descriptors_from:
             h, w = data["image"].shape[-2:]
@@ -106,7 +113,7 @@ class MixedExtractor(BaseModel):
         metrics = {}
         total = 0
 
-        for k in ["detector", "descriptor"]:
+        for k in ["detector", "descriptor", "refiner"]:
             apply = True
             if "apply_loss" in self.conf[k].keys():
                 apply = self.conf[k].apply_loss
@@ -124,7 +131,7 @@ class MixedExtractor(BaseModel):
         if self.conf.compile:
             return super().compile(*args, **kwargs)
 
-        for k in ["detector", "descriptor"]:
+        for k in ["detector", "descriptor", "refiner"]:
             if self.conf[k].name:
                 setattr(self, k, getattr(self, k).compile(*args, **kwargs))
         return self
