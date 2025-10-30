@@ -58,7 +58,11 @@ def load_sweep_config(
     conf = {}
     for sweep_conf in sweep_confs:
         for k, v in sweep_conf.items():
-            conf[k] = v[sweep_idx]
+            if len(v) == 1:
+                conf[k] = v[0]
+            else:
+                conf[k] = v[sweep_idx]
+    logger.info(f"Sweep config: {conf}")
     conf = misc.unflatten_dict(conf)
     return OmegaConf.create(conf)
 
