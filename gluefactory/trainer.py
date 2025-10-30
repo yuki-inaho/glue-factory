@@ -1082,6 +1082,12 @@ def launch_training(output_dir: Path, conf: DictConfig, device: torch.device):
     dataset = datasets.get_dataset(conf.data.name)(
         scale_by_device_count(conf.data, conf.train.num_devices or 1)
     )
+    if conf.train.get("reload_model"):
+        assert conf.train.load_experiment is not None
+        pretrain_dir = settings.TRAINING_PATH / conf.train.load_experiment
+        logger.info(f"Finetuning: Loading model config from {pretrain_dir}.")
+        pretrain_conf = OmegaConf.load(pretrain_dir / "config.yaml")
+        conf.model = OmegaConf.merge(pretrain_conf.model, conf.model)
     model = models.get_model(conf.model.name)(conf.model).to(device)
     if conf.get("lazy_init", True):
         logger.info("Running dummy forward pass to initialize lazy modules.")
