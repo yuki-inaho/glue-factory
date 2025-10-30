@@ -5,6 +5,7 @@ import torch
 
 from ..utils import misc
 from . import reconstruction
+from . import transforms as gtr
 
 
 def shape_normalize(kpts, w, h):
@@ -139,6 +140,7 @@ def align_pointclouds(
     pts_v1: torch.Tensor,
     weights: torch.Tensor = None,
     return_Rt: bool = False,
+    scale_only: bool = False,
 ) -> tuple[
     reconstruction.Pose | None | tuple[torch.Tensor, torch.Tensor],
     torch.Tensor,
@@ -157,6 +159,10 @@ def align_pointclouds(
 
     t0 = misc.wmean(pts_v0, weights, dim=0)
     t1 = misc.wmean(pts_v1, weights, dim=0)
+
+    if scale_only:
+        t0 = torch.zeros_like(t0)
+        t1 = torch.zeros_like(t1)
     pts_v0 = pts_v0 - t0[None, :]
     pts_v1 = pts_v1 - t1[None, :]
 
@@ -169,19 +175,22 @@ def align_pointclouds(
     pts_v0 = pts_v0 * weights
     # Do not mult here as this is used in the output
     # pts_v1 = pts_v1 * weights
-    try:
-        U, _, V = (pts_v0.T @ pts_v1).double().svd()
-        U: torch.Tensor = U
-        V: torch.Tensor = V
-    except:
-        print("Procustes failed: SVD did not converge!")
-        s = s0 / s1
-        return None, s, pts_v1
-    # build rotation matrix
-    R = (U @ V.T).float()
-    R = torch.stack(
-        [R[:, 0], R[:, 1], R[:, 2] * R.det().sign()], dim=-1
-    )  # ensure a right-handed coordinate system
+    if scale_only:
+        R = torch.eye(3, dtype=t0.dtype, device=t0.device)
+    else:
+        try:
+            U, _, V = (pts_v0.T @ pts_v1).double().svd()
+            U: torch.Tensor = U
+            V: torch.Tensor = V
+        except:
+            print("Procustes failed: SVD did not converge!")
+            s = s0 / s1
+            return None, s, pts_v1
+        # build rotation matrix
+        R = (U @ V.T).float()
+        R = torch.stack(
+            [R[:, 0], R[:, 1], R[:, 2] * R.det().sign()], dim=-1
+        )  # ensure a right-handed coordinate system
     s = s0 / s1
     t = t0 - s * (t1 @ R.T)
     c0_t_c1 = reconstruction.Pose.from_Rt(R, t)
@@ -196,12 +205,13 @@ def batch_align_pointclouds(
     pts_v0: torch.Tensor,
     pts_v1: torch.Tensor,
     weights: torch.Tensor = None,
+    scale_only: bool = False,
 ) -> tuple[reconstruction.Pose | None, torch.Tensor, torch.Tensor]:
 
     in_dims = (0, 0, 0) if weights is not None else (0, 0)
 
     c0_Rt_c1, scales, pts1_v0 = torch.vmap(
-        functools.partial(align_pointclouds, return_Rt=True),
+        functools.partial(align_pointclouds, return_Rt=True, scale_only=scale_only),
         in_dims=in_dims,
         out_dims=0,
     )(pts_v0, pts_v1, weights)
