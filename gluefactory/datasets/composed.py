@@ -1,5 +1,7 @@
 """Composed dataset that combines multiple datasets."""
 
+import logging
+
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -9,6 +11,8 @@ from gluefactory.utils import misc, preprocess
 from . import get_dataset
 from .augmentations import augmentations
 from .base_dataset import BaseDataset
+
+logger = logging.getLogger(__name__)
 
 
 class ComposedDataset(BaseDataset):
@@ -35,11 +39,12 @@ class ComposedSplit(torch.utils.data.Dataset):
         self.sizes = np.array([len(d) for d in self.datasets])
 
         self.dataset_names = [name for name in conf.childs.keys()]
+        logger.info("Composed dataset with datasets: %s", self.dataset_names)
 
-        self.weights = {
+        self.weights = [
             c.get(f"{split}_weight", c.get("weight", None))
             for c in conf.childs.values()
-        }
+        ]
         if all(w is None for w in self.weights):
             self.weights = None
         else:
