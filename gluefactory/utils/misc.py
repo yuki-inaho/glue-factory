@@ -637,7 +637,7 @@ def masked_mean(
 ) -> torch.Tensor:
     assert tensor.ndim == mask.ndim, (tensor.shape, mask.shape)
     sum_tensor = torch.where(mask, tensor, 0.0).sum(dim=dim, keepdim=keepdim)
-    count = mask.sum(dim=dim, keepdim=keepdim).clamp_min(1e-6)
+    count = mask.sum(dim=dim, keepdim=keepdim).clamp_min(1)
     return sum_tensor / count
 
 
