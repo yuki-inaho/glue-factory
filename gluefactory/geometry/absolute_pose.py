@@ -9,7 +9,7 @@ from .reconstruction import Pose
 
 def _mean_isotropic_scale_normalize(
     points: torch.Tensor,
-    eps: float = 1e-8,
+    eps: float = 1e-3,
     weights: torch.Tensor | None = None,
     return_pose: bool = False,
 ) -> tuple[torch.Tensor, Pose | torch.Tensor]:
