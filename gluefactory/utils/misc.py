@@ -72,7 +72,7 @@ def batch_to_numpy(batch):
     )
 
 
-def batch_to_device(batch, device, non_blocking=True):
+def batch_to_device(batch, device, non_blocking=False):
     if device == "numpy":
         return batch_to_numpy(batch)
 
@@ -614,7 +614,7 @@ def build_heatmap(img, patches, corners):
     return hmap, (hmap > 0.0).float()  # bxhxw
 
 
-def get_image_coords(img):
+def get_image_coords(img, expand: bool = False):
     h, w = img.shape[-2:]
     coords = (
         torch.stack(
@@ -626,7 +626,10 @@ def get_image_coords(img):
             dim=0,
         ).permute(1, 2, 0)
     ) + 0.5
-    return coords[None]
+    coords = coords[None]
+    if expand:
+        coords = coords.expand(img.shape[0], -1, -1, -1)
+    return coords
 
 
 def masked_mean(
@@ -729,23 +732,25 @@ def hwc_from_chw(image):
     return image.transpose(-3, -2).transpose(-2, -1)
 
 
+# @AMP_CUSTOM_FWD_F32
 def denormalize_coords(coords, hw: tuple[int, int] | None = None) -> torch.Tensor:
     """Denormalize coordinates from [-1, 1] to [0, H] or [0, W] (COLMAP)"""
     coords = coords.clone()
     if hw is None:
         hw = coords.shape[-3:-1]
-    coords[..., 0] = (coords[..., 0] + 1) / 2 * (hw[1] - 1)
-    coords[..., 1] = (coords[..., 1] + 1) / 2 * (hw[0] - 1)
+    coords[..., 0] = (coords[..., 0]) / 2 * hw[1]
+    coords[..., 1] = (coords[..., 1]) / 2 * hw[0]
     return coords
 
 
+# @AMP_CUSTOM_FWD_F32
 def normalize_coords(coords, hw: tuple[int, int] | None = None) -> torch.Tensor:
     """Normalize coordinates from [0, H] or [0, W] (COLMAP) to [-1, 1]"""
     coords = coords.clone()
     if hw is None:
         hw = coords.shape[-3:-1]
-    coords[..., 0] = coords[..., 0] / (hw[1] - 1) * 2 - 1
-    coords[..., 1] = coords[..., 1] / (hw[0] - 1) * 2 - 1
+    coords[..., 0] = coords[..., 0] / hw[1] * 2 - 1
+    coords[..., 1] = coords[..., 1] / hw[0] * 2 - 1
     return coords
 
 
@@ -760,6 +765,26 @@ def cycle_dist(
         - (q_to_ref_to_q if normalized else denormalize_coords(q_to_ref_to_q)),
         dim=-1,
     )
+
+
+def interpolate_points(
+    pts: torch.Tensor,  # ... x N X 2
+    features: torch.Tensor,  # ... x H x W x D
+    mode: str = "bilinear",
+    normalize: bool = False,
+    is_chw: bool = False,
+    align_corners: bool = False,
+) -> torch.Tensor:  # ... x N x D
+    # Normalize to [-1, 1] for grid sampling
+    if normalize:
+        pts = normalize_coords(pts, features.shape[-3:-1])
+    if not is_chw:
+        features = chw_from_hwc(features)
+    sampled_features = grid_sample(
+        features, pts[..., None, :, :], interpolation=mode, align_corners=align_corners
+    )
+    sampled_features = hwc_from_chw(sampled_features)[..., 0, :, :]
+    return sampled_features
 
 
 def interpolate_matches(
