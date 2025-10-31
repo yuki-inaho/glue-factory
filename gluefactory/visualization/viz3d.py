@@ -166,6 +166,7 @@ def plot_points(
     if isinstance(color, torch.Tensor):
         color = color.detach().cpu().numpy()
     x, y, z = pts.T
+    colorbar = None if colorscale is None else dict(thickness=20, orientation="h")
     tr = go.Scatter3d(
         x=x,
         y=y,
@@ -178,7 +179,7 @@ def plot_points(
             color=color,
             line_width=0.0,
             colorscale=colorscale,
-            colorbar=dict(thickness=20, orientation="h"),
+            colorbar=colorbar,
         ),
     )
     fig.add_trace(tr)
