@@ -77,6 +77,10 @@ class TensorWrapper(TensorClass, tensor_only=True):
     def device(self) -> torch.device:
         return self.data_.device
 
+    def __deepcopy__(self, memo: Dict[int, Any]) -> "TensorWrapper":
+        # The tensorclass __deepcopy__ will be deprecated, so we clone instead.
+        return self.clone()
+
     @classmethod
     def where(cls, condition, input, other, *, out=None):
         if not (isinstance(input, cls) and isinstance(other, cls)):
