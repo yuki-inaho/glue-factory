@@ -132,9 +132,8 @@ class CacheLoader(BaseModel):
                             if len(view_idx) == 0
                             else data[f"view{view_idx}"]["transform"]
                         )
-                        norm_t_img = torch.as_tensor(norm_t_img)
                         pred[k] = gtr.transform_points(
-                            (norm_t_img[i].to(pred[k].dtype)), pred[k]
+                            (torch.as_tensor(norm_t_img[i]).to(pred[k].dtype)), pred[k]
                         )
                         if self.conf.check_valid:
                             image_size = (
