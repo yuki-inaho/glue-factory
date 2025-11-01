@@ -738,9 +738,9 @@ def denormalize_coords(coords, hw: tuple[int, int] | None = None) -> torch.Tenso
     coords = coords.clone()
     if hw is None:
         hw = coords.shape[-3:-1]
-    coords[..., 0] = (coords[..., 0]) / 2 * hw[1]
-    coords[..., 1] = (coords[..., 1]) / 2 * hw[0]
-    return coords
+    return torch.stack(
+        [(coords[..., 0]) / 2 * hw[1], (coords[..., 1]) / 2 * hw[0]], dim=-1
+    )
 
 
 # @AMP_CUSTOM_FWD_F32
@@ -749,9 +749,9 @@ def normalize_coords(coords, hw: tuple[int, int] | None = None) -> torch.Tensor:
     coords = coords.clone()
     if hw is None:
         hw = coords.shape[-3:-1]
-    coords[..., 0] = coords[..., 0] / hw[1] * 2 - 1
-    coords[..., 1] = coords[..., 1] / hw[0] * 2 - 1
-    return coords
+    return torch.stack(
+        [coords[..., 0] / hw[1] * 2 - 1, coords[..., 1] / hw[0] * 2 - 1], dim=-1
+    )
 
 
 def cycle_dist(
