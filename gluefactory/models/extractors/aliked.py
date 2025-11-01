@@ -596,6 +596,7 @@ class ALIKED(BaseModel):
         "force_num_keypoints": False,
         "pretrained": True,
         "nms_radius": 2,
+        "dense_outputs": False,
     }
 
     checkpoint_url = "https://github.com/Shiaoming/ALIKED/raw/main/models/{}.pth"
@@ -776,13 +777,16 @@ class ALIKED(BaseModel):
         wh = torch.tensor([w - 1, h - 1], device=image.device)
         # no padding required,
         # we can set detection_threshold=-1 and conf.max_num_keypoints
-        return {
+        pred = {
             "keypoints": wh * (torch.stack(keypoints) + 1) / 2.0,  # B N 2
             "descriptors": torch.stack(descriptors),  # B N D
             "keypoint_scores": torch.stack(kptscores),  # B N
             "score_dispersity": torch.stack(scoredispersitys),
             "score_map": score_map,  # Bx1xHxW
         }
+        if self.conf.dense_outputs:
+            pred["image_features"] = feature_map  # BxDxHxW
+        return pred
 
     def loss(self, pred, data):
         raise NotImplementedError
