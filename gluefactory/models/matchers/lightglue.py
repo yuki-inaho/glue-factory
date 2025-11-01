@@ -50,16 +50,23 @@ def apply_cached_rotary_emb(freqs: torch.Tensor, t: torch.Tensor) -> torch.Tenso
 
 
 class LearnableFourierPositionalEncoding(nn.Module):
-    def __init__(self, M: int, dim: int, F_dim: int = None, gamma: float = 1.0) -> None:
+    def __init__(
+        self, M: int, F_dim, hidden_dim: int = None, gamma: float = 1.0
+    ) -> None:
         super().__init__()
-        F_dim = F_dim if F_dim is not None else dim
         self.gamma = gamma
-        self.Wr = nn.Linear(M, F_dim // 2, bias=False)
+        if hidden_dim is None:
+            self.Wh = nn.Identity()
+            hidden_dim = M
+        else:
+            self.Wh = nn.Linear(M, hidden_dim, bias=False)
+            nn.init.normal_(self.Wh.weight.data, mean=0, std=self.gamma**-2)
+        self.Wr = nn.Linear(hidden_dim, F_dim // 2, bias=False)
         nn.init.normal_(self.Wr.weight.data, mean=0, std=self.gamma**-2)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """encode position vector"""
-        projected = self.Wr(x)
+        projected = self.Wr(self.Wh(x))
         cosines, sines = torch.cos(projected), torch.sin(projected)
         emb = torch.stack([cosines, sines], 0).unsqueeze(-3)
         return emb.repeat_interleave(2, dim=-1)
@@ -404,7 +411,7 @@ class LightGlue(BaseModel):
 
         head_dim = conf.descriptor_dim // conf.num_heads
         self.posenc = LearnableFourierPositionalEncoding(
-            2 + 2 * conf.add_scale_ori, head_dim, head_dim
+            2 + 2 * conf.add_scale_ori, head_dim
         )
 
         h, n, d = conf.num_heads, conf.n_layers, conf.descriptor_dim
