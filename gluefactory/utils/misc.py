@@ -661,6 +661,7 @@ def grid_sample(
     coords: torch.Tensor,
     interpolation: str = "bilinear",
     align_corners: bool = False,
+    padding_mode: str = "zeros",
 ):
     assert image.dim() == coords.dim()
     is_batched = image.dim() == 4
@@ -668,7 +669,11 @@ def grid_sample(
     if is_batched:
         assert coords.dim() == 4
         return F.grid_sample(
-            image.to(coords.device), coords, interpolation, align_corners=False
+            image.to(coords.device),
+            coords,
+            interpolation,
+            align_corners=align_corners,
+            padding_mode=padding_mode,
         )
     else:
         return F.grid_sample(
@@ -739,7 +744,7 @@ def denormalize_coords(coords, hw: tuple[int, int] | None = None) -> torch.Tenso
     if hw is None:
         hw = coords.shape[-3:-1]
     return torch.stack(
-        [(coords[..., 0]) / 2 * hw[1], (coords[..., 1]) / 2 * hw[0]], dim=-1
+        [(coords[..., 0] + 1) / 2 * hw[1], (coords[..., 1] + 1) / 2 * hw[0]], dim=-1
     )
 
 
@@ -774,17 +779,57 @@ def interpolate_points(
     normalize: bool = False,
     is_chw: bool = False,
     align_corners: bool = False,
+    padding_mode: str = "zeros",
 ) -> torch.Tensor:  # ... x N x D
     # Normalize to [-1, 1] for grid sampling
-    if normalize:
-        pts = normalize_coords(pts, features.shape[-3:-1])
     if not is_chw:
         features = chw_from_hwc(features)
+    if normalize:
+        pts = normalize_coords(pts, features.shape[-2:])
     sampled_features = grid_sample(
-        features, pts[..., None, :, :], interpolation=mode, align_corners=align_corners
+        features,
+        pts[..., None, :, :],
+        interpolation=mode,
+        align_corners=align_corners,
+        padding_mode=padding_mode,
     )
     sampled_features = hwc_from_chw(sampled_features)[..., 0, :, :]
     return sampled_features
+
+
+def interpolate_patches(
+    pts: torch.Tensor,  # B x N x 2
+    features: torch.Tensor,
+    ps: int,
+    mode: str = "nearest",
+    normalize: bool = False,
+    is_chw: bool = False,
+    align_corners: bool = False,
+    padding_mode: str = "zeros",
+) -> tuple[torch.Tensor, torch.Tensor]:  # B x N x D x ps x ps, B x N x 2
+    if not is_chw:
+        features = chw_from_hwc(features)
+    if normalize:
+        pts_i = pts
+    else:
+        pts_i = denormalize_coords(pts, features.shape[-2:])
+    dummy_patch = torch.zeros(
+        (1, 1, ps, ps), device=features.device, dtype=features.dtype
+    )
+    p_xy = get_image_coords(dummy_patch)
+    corners = torch.round(pts_i - ps / 2 - 0.5)
+    p_xy_i = corners[:, :, None, None, :] + p_xy[:, None]
+    p_xy_n = normalize_coords(p_xy_i, features.shape[-2:])
+    patches = torch.vmap(grid_sample, in_dims=(None, 1), out_dims=1)(
+        features,
+        p_xy_n,
+        interpolation=mode,
+        align_corners=align_corners,
+        padding_mode=padding_mode,
+    )
+    if not is_chw:
+        patches = hwc_from_chw(patches)
+    return patches, corners
 
 
 def interpolate_matches(
