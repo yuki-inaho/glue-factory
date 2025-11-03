@@ -60,7 +60,6 @@ def project(
     camera_i,
     camera_j,
     T_itoj,
-    validi,
     ccth=None,
     sample_depth_fun=sample_depth,
     sample_depth_kwargs=None,
@@ -71,20 +70,22 @@ def project(
     kpi_3d_i = camera_i.image2cam(kpi)
     kpi_3d_i = kpi_3d_i * di[..., None]
     kpi_3d_j = T_itoj.transform(kpi_3d_i)
-    kpi_j, validj = camera_j.cam2image(kpi_3d_j)
+    kpi_j, valid = camera_j.cam2image(kpi_3d_j)
+    invalid = ~valid
     # di_j = kpi_3d_j[..., -1]
-    validi = validi & validj
     if depthj is None or ccth is None:
-        return kpi_j, validi & validj
+        return kpi_j, valid, invalid
     else:
         # circle consistency
         dj, validj = sample_depth_fun(kpi_j, depthj, **sample_depth_kwargs)
         kpi_j_3d_j = camera_j.image2cam(kpi_j) * dj[..., None]
         kpi_j_i, validj_i = camera_i.cam2image(T_itoj.inv().transform(kpi_j_3d_j))
-        consistent = ((kpi - kpi_j_i) ** 2).sum(-1) < ccth
-        visible = validi & consistent & validj_i & validj
+        reproj_error = ((kpi - kpi_j_i) ** 2).sum(-1)
+        consistent = reproj_error < ccth**2
+        visible = valid & consistent & validj_i & validj
+        invalid = invalid | (validj & ((~validj_i) | (~consistent)))
         # visible = validi
-        return kpi_j, visible
+        return kpi_j, visible, invalid
 
 
 def dense_warp_consistency(
@@ -100,7 +101,8 @@ def dense_warp_consistency(
         -2,
     )
     validi = di > 0
-    kpir, validir = project(kpi, di, depthj, camerai, cameraj, T_itoj, validi, **kwargs)
+    kpir, validir, _ = project(kpi, di, depthj, camerai, cameraj, T_itoj, **kwargs)
+    validir = validir & validi
 
     return kpir.unflatten(-2, depthi.shape[-2:]), validir.unflatten(
         -1, (depthi.shape[-2:])
@@ -120,12 +122,10 @@ def symmetric_reprojection_error(
     d0, valid0 = sample_depth(pts0, depth0)
     d1, valid1 = sample_depth(pts1, depth1)
 
-    pts0_1, visible0 = project(
-        pts0, d0, depth1, camera0, camera1, T_0to1, valid0, ccth=None
-    )
-    pts1_0, visible1 = project(
-        pts1, d1, depth0, camera1, camera0, T_1to0, valid1, ccth=None
-    )
+    pts0_1, visible0, _ = project(pts0, d0, depth1, camera0, camera1, T_0to1, ccth=None)
+    visible0 = visible0 & valid0
+    pts1_0, visible1, _ = project(pts1, d1, depth0, camera1, camera0, T_1to0, ccth=None)
+    visible1 = visible1 & valid1
 
     reprojection_errors_px = 0.5 * (
         (pts0_1 - pts1).norm(dim=-1) + (pts1_0 - pts0).norm(dim=-1)

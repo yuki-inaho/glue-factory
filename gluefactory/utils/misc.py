@@ -471,6 +471,13 @@ def resize_image(
     return image_out
 
 
+def l2_normalize(
+    tensor: torch.Tensor, dim: int = -1, eps: float = 1e-10
+) -> torch.Tensor:
+    norm = torch.norm(tensor, p=2, dim=dim, keepdim=True).clamp_min(eps)
+    return tensor / norm
+
+
 def is_image_of_shape(image: torch.Tensor, hw: tuple[int, int]) -> bool:
     h, w = hw
     return h in image.shape and w in image.shape
@@ -806,7 +813,7 @@ def interpolate_patches(
     is_chw: bool = False,
     align_corners: bool = False,
     padding_mode: str = "zeros",
-) -> tuple[torch.Tensor, torch.Tensor]:  # B x N x D x ps x ps, B x N x 2
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:  # B x N x D x ps x ps, B x N x 2
     if not is_chw:
         features = chw_from_hwc(features)
     if normalize:
@@ -817,8 +824,8 @@ def interpolate_patches(
         (1, 1, ps, ps), device=features.device, dtype=features.dtype
     )
     p_xy = get_image_coords(dummy_patch)
-    corners = torch.round(pts_i - ps / 2 - 0.5)
-    p_xy_i = corners[:, :, None, None, :] + p_xy[:, None]
+    cxy_i = torch.round(pts_i - ps / 2 - 0.5)
+    p_xy_i = cxy_i[:, :, None, None, :] + p_xy[:, None]
     p_xy_n = normalize_coords(p_xy_i, features.shape[-2:])
     patches = torch.vmap(grid_sample, in_dims=(None, 1), out_dims=1)(
         features,
@@ -829,7 +836,32 @@ def interpolate_patches(
     )
     if not is_chw:
         patches = hwc_from_chw(patches)
-    return patches, corners
+    return patches, p_xy_n, cxy_i
+
+
+def patch_interpolate_points(
+    pts: torch.Tensor,  # B x N X 2
+    patches: torch.Tensor,  # B x N x D x ps x ps OR B x N x ps x ps x D
+    **kwargs,
+):
+    return torch.vmap(interpolate_points, in_dims=0, out_dims=0)(
+        pts[:, :, None],
+        patches,
+        **kwargs,
+    )[..., 0, :]
+
+
+def log_softmax(scores: torch.Tensor, dim: int | tuple = -1) -> torch.Tensor:
+    """Numerically stable log softmax."""
+    if isinstance(dim, int):
+        return torch.log_softmax(scores, dim=dim)
+    else:
+        last = tuple(range(-len(dim), 0))
+        scores = scores.moveaxis(dim, last)
+        log_probs = torch.log_softmax(scores.flatten(-len(dim)), dim=-1).reshape(
+            *scores.shape
+        )
+        return log_probs.moveaxis(last, dim)
 
 
 def interpolate_matches(

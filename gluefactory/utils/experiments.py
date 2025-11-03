@@ -72,6 +72,7 @@ def compose_config(
     default_config_dir: str = "configs/",
     overrides: Optional[list[str]] = None,
     sweep_idx: int | None = None,
+    resolve: bool = True,
 ) -> tuple[Path, OmegaConf]:
 
     conf_path = parse_config_path(name_or_path, default_config_dir)
@@ -88,6 +89,8 @@ def compose_config(
         OmegaConf.set_struct(custom_conf, False)
         custom_conf = OmegaConf.merge(custom_conf, sweep_conf)
         del custom_conf["sweep"]
+    if resolve:
+        OmegaConf.resolve(custom_conf)
     return conf_path, custom_conf
 
 

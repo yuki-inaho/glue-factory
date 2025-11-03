@@ -16,6 +16,7 @@ def gt_matches_from_pose_depth(
     epi_th=None,
     cc_th=None,
     min_overlap: float | None = None,
+    add_epi_outliers=True,
     **kw,
 ):
     if kp0.shape[1] == 0 or kp1.shape[1] == 0:
@@ -41,12 +42,32 @@ def gt_matches_from_pose_depth(
         d0, valid0 = depth.sample_depth(kp0, depth0)
         d1, valid1 = depth.sample_depth(kp1, depth1)
 
-    kp0_1, visible0 = depth.project(
-        kp0, d0, depth1, camera0, camera1, T_0to1, valid0, ccth=cc_th
+    kp0_1, visible0, unmatchable0 = depth.project(
+        kp0, d0, depth1, camera0, camera1, T_0to1, ccth=cc_th
     )
-    kp1_0, visible1 = depth.project(
-        kp1, d1, depth0, camera1, camera0, T_1to0, valid1, ccth=cc_th
+    visible0 = visible0 & valid0
+    kp1_0, visible1, unmatchable1 = depth.project(
+        kp1, d1, depth0, camera1, camera0, T_1to0, ccth=cc_th
     )
+    visible1 = visible1 & valid1
+
+    unmatchable0 = valid0 & unmatchable0
+    unmatchable1 = valid1 & unmatchable1
+
+    if add_epi_outliers:
+        i1_F_i0 = epipolar.T_to_F(camera0, camera1, T_0to1)
+        image_size0 = data["view0"]["image_size"]
+        image_size1 = data["view1"]["image_size"]
+
+        evalid0 = torch.vmap(
+            epipolar.check_epipolar_intersection,
+        )(kp0, i1_F_i0, image_size1[:, 0], image_size1[:, 1])
+        evalid1 = torch.vmap(
+            epipolar.check_epipolar_intersection,
+        )(kp1, i1_F_i0.transpose(-1, -2), image_size0[:, 0], image_size0[:, 1])
+
+        unmatchable0 = unmatchable0 | (~evalid0)
+        unmatchable1 = unmatchable1 | (~evalid1)
     if min_overlap is not None and "overlap_0to1" in data:
         has_overlap = (
             torch.max(data["overlap_0to1"], data["overlap_1to0"]) > min_overlap
@@ -118,6 +139,8 @@ def gt_matches_from_pose_depth(
         "proj_1to0": kp1_0,
         "visible0": visible0,
         "visible1": visible1,
+        "unmatchable0": unmatchable0,
+        "unmatchable1": unmatchable1,
         "has_overlap": has_overlap,
         "xyz_keypoints0": c0_t_w.inv() @ (camera0.image2cam(kp0) * d0.unsqueeze(-1)),
         "xyz_keypoints1": c1_t_w.inv() @ (camera1.image2cam(kp1) * d1.unsqueeze(-1)),
