@@ -256,6 +256,70 @@ class CrossBlock(nn.Module):
         return x0, x1
 
 
+class UniCrossBlock(nn.Module):
+    def __init__(
+        self,
+        embed_dim: int,
+        num_heads: int,
+        flash: bool = False,
+        bias: bool = True,
+        dropout: float = 0.0,
+    ) -> None:
+        super().__init__()
+        self.heads = num_heads
+        dim_head = embed_dim // num_heads
+        self.scale = dim_head**-0.5
+        inner_dim = dim_head * num_heads
+        self.to_k = nn.Linear(embed_dim, inner_dim, bias=bias)
+        self.to_q = nn.Linear(embed_dim, inner_dim, bias=bias)
+        self.to_v = nn.Linear(embed_dim, inner_dim, bias=bias)
+        self.to_out = nn.Linear(inner_dim, embed_dim, bias=bias)
+        self.ffn = nn.Sequential(
+            nn.Linear(2 * embed_dim, 2 * embed_dim),
+            nn.LayerNorm(2 * embed_dim, elementwise_affine=True),
+            nn.GELU(),
+            nn.Linear(2 * embed_dim, embed_dim),
+        )
+        if flash and FLASH_AVAILABLE:
+            self.flash = Attention(True)
+        else:
+            self.flash = None
+
+        if dropout > 1.0e-4:
+            self.dropout = nn.Dropout(dropout)
+        else:
+            self.dropout = nn.Identity()
+
+    def forward(
+        self,
+        x0: torch.Tensor,
+        x1: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+        encoding0: Optional[torch.Tensor] = None,
+        encoding1: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        q = self.to_q(x0)
+        k = self.to_k(x1)
+        v = self.to_v(x1)
+        q, k, v = map(
+            lambda t: t.unflatten(-1, (self.heads, -1)).transpose(1, 2),
+            (q, k, v),
+        )
+        if encoding0 is not None and encoding1 is not None:
+            q = apply_cached_rotary_emb(encoding0, q)
+            k = apply_cached_rotary_emb(encoding1, k)
+        if self.flash is not None and q.device.type == "cuda":
+            m0 = self.flash(q, k, v, mask)
+        else:
+            raise NotImplementedError(
+                "Non-flash attention not implemented for UniCrossBlock"
+            )
+        m0 = m0.transpose(1, 2).flatten(start_dim=-2)
+        m0 = self.to_out(m0)
+        x0 = x0 + self.dropout(self.ffn(torch.cat([x0, m0], -1)))
+        return x0
+
+
 class TransformerLayer(nn.Module):
     def __init__(self, *args, **kwargs):
         super().__init__()
@@ -272,7 +336,22 @@ class TransformerLayer(nn.Module):
         cross_encoding1: torch.Tensor | None = None,
         mask0: Optional[torch.Tensor] = None,
         mask1: Optional[torch.Tensor] = None,
+        checkpointed: bool = False,
+        reentrant: bool = True,
     ):
+        if checkpointed and self.training:
+            return torch.utils.checkpoint.checkpoint(
+                self.forward,
+                desc0,
+                desc1,
+                encoding0,
+                encoding1,
+                cross_encoding0,
+                cross_encoding1,
+                mask0,
+                mask1,
+                use_reentrant=reentrant,
+            )
         if mask0 is not None and mask1 is not None:
             return self.masked_forward(
                 desc0,
@@ -337,11 +416,17 @@ def sigmoid_log_double_softmax(
 
 
 class MatchAssignment(nn.Module):
-    def __init__(self, dim: int) -> None:
+    def __init__(
+        self, dim: int, out_dim: int | None = None, temperature: float | None = None
+    ) -> None:
         super().__init__()
-        self.dim = dim
         self.matchability = nn.Linear(dim, 1, bias=True)
-        self.final_proj = nn.Linear(dim, dim, bias=True)
+        self.final_proj = nn.Linear(dim, out_dim or dim, bias=True)
+
+        if temperature is not None:
+            self.temperature = nn.Parameter(torch.Tensor([temperature]))
+        else:
+            self.temperature = None
 
     def forward(self, desc0: torch.Tensor, desc1: torch.Tensor):
         """build assignment matrix from descriptors"""
@@ -349,6 +434,8 @@ class MatchAssignment(nn.Module):
         _, _, d = mdesc0.shape
         mdesc0, mdesc1 = mdesc0 / d**0.25, mdesc1 / d**0.25
         sim = torch.einsum("bmd,bnd->bmn", mdesc0, mdesc1)
+        if self.temperature is not None:
+            sim = sim * self.temperature
         z0 = self.matchability(desc0)
         z1 = self.matchability(desc1)
         scores = sigmoid_log_double_softmax(sim, z0, z1)
