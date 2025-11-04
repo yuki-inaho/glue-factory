@@ -710,7 +710,7 @@ class Trainer:
             for k, v in loss_metrics.items():
                 val = v.detach()
                 if self.distributed:
-                    torch.distributed.all_reduce(val)
+                    torch.distributed.all_reduce(val.contiguous())
                     val = val / self.num_gpus
                 loss_metrics[k] = val
             self.step_timer.measure("loss_fn")

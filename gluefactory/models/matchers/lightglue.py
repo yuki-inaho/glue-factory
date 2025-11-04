@@ -119,7 +119,7 @@ class Attention(nn.Module):
         if self.enable_flash and q.device.type == "cuda":
             # use torch 2.0 scaled_dot_product_attention with flash
             if FLASH_AVAILABLE:
-                args = [x.half().contiguous() for x in [q, k, v]]
+                args = [x.contiguous() for x in [q, k, v]]
                 v = F.scaled_dot_product_attention(*args, attn_mask=mask).to(q.dtype)
                 return v if mask is None else v.nan_to_num()
         elif FLASH_AVAILABLE:

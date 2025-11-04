@@ -37,7 +37,6 @@ class DepthMatcher(BaseModel):
             ]
 
     @misc.filter_batch_for_jit
-    @misc.AMP_CUSTOM_FWD_F32
     def _forward(self, data):
         return self.match_with_depth(data)
 

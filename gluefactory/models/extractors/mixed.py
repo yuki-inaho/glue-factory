@@ -39,16 +39,8 @@ class MixedExtractor(BaseModel):
     def _init(self, conf):
         if conf.detector.name:
             self.detector = get_model(conf.detector.name)(to_ctr(conf.detector))
-        else:
-            self.required_data_keys += ["cache"]
-            self.required_cache_keys += ["keypoints"]
-
         if conf.descriptor.name:
             self.descriptor = get_model(conf.descriptor.name)(to_ctr(conf.descriptor))
-        else:
-            self.required_data_keys += ["cache"]
-            self.required_cache_keys += ["descriptors"]
-
         if conf.refiner.name:
             self.refiner = get_model(conf.refiner.name)(to_ctr(conf.refiner))
 

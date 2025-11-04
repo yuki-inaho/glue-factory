@@ -16,7 +16,7 @@ def gt_matches_from_pose_depth(
     epi_th=None,
     cc_th=None,
     min_overlap: float | None = None,
-    add_epi_outliers=True,
+    add_epi_outliers: bool = True,
     **kw,
 ):
     if kp0.shape[1] == 0 or kp1.shape[1] == 0:
