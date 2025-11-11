@@ -171,6 +171,49 @@ class TestKomainuColmapDataset:
         # Check that rotation and translation are close
         assert torch.allclose(T_0to1.data_, expected_T_0to1.data_, atol=1e-4)
 
+    def test_homography_computation(self, dataset_config):
+        """Test 8: Homography matrix H_0to1 is computed correctly."""
+        from gluefactory.datasets.komainu_colmap import KomainuColmapDataset
+
+        dataset = KomainuColmapDataset(dataset_config)
+        data = dataset[0]
+
+        # H_0to1 should be present
+        assert "H_0to1" in data, "H_0to1 key should be present in data"
+
+        # H_0to1 should be a 3x3 matrix
+        H = data["H_0to1"]
+        assert isinstance(H, torch.Tensor), f"H_0to1 should be a tensor, got {type(H)}"
+        assert H.shape == (3, 3), f"H_0to1 should be 3x3, got shape {H.shape}"
+
+        # H should have reasonable values (not all zeros, not NaN/Inf)
+        assert not torch.isnan(H).any(), "H_0to1 contains NaN values"
+        assert not torch.isinf(H).any(), "H_0to1 contains Inf values"
+        assert torch.abs(H).sum() > 0, "H_0to1 is all zeros"
+
+        # H should be approximately invertible (det != 0)
+        det = torch.det(H)
+        assert torch.abs(det) > 1e-6, f"H_0to1 determinant too close to zero: {det}"
+
+        # Test homography consistency: points from view0 should map to view1
+        # Get some keypoints
+        kp0 = data.get("keypoints0")
+        kp1 = data.get("keypoints1")
+
+        if kp0 is not None and kp1 is not None and len(kp0) > 0:
+            # Convert keypoints to homogeneous coordinates
+            kp0_h = torch.cat([kp0[:10], torch.ones(min(10, len(kp0)), 1)], dim=-1)  # [N, 3]
+
+            # Apply homography
+            kp0_warped = (H @ kp0_h.T).T  # [N, 3]
+            kp0_warped = kp0_warped[:, :2] / kp0_warped[:, 2:3]  # Normalize to [N, 2]
+
+            # The warped points should be within image bounds
+            # (not a strong test, but checks basic sanity)
+            img_shape = data["view1"]["image"].shape
+            assert kp0_warped[:, 0].min() > -img_shape[2], "Warped x-coords too negative"
+            assert kp0_warped[:, 1].min() > -img_shape[1], "Warped y-coords too negative"
+
 
 if __name__ == "__main__":
     # Run tests with pytest
