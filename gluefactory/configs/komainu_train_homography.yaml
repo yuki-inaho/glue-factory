@@ -1,15 +1,13 @@
 # Training configuration for komainu_colmap dataset
-# NOTE: Currently blocked - requires either depth maps or homographies
-# - depth_matcher needs: depth maps (not available)
-# - homography_matcher needs: H_0to1 (not yet computed)
-# TODO: Implement homography computation from COLMAP poses + ground plane assumption
+# Uses homography-based ground truth computed from COLMAP poses
+# Homography assumes planar scene (z=0 plane, d=2.0m)
 
 defaults:
   - data: komainu_colmap
   - model: two_view_pipeline
   - model@model.extractor: extractor/superpoint_open
   - model@model.matcher: matcher/lightglue
-  - model@model.ground_truth: matcher/depth_matcher
+  - model@model.ground_truth: matcher/homography_matcher
   - _self_
 
 model:
