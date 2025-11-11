@@ -1,17 +1,21 @@
 # Training configuration for komainu_colmap dataset
-# Uses homography-based ground truth (depth maps not available yet)
+# NOTE: Currently blocked - requires either depth maps or homographies
+# - depth_matcher needs: depth maps (not available)
+# - homography_matcher needs: H_0to1 (not yet computed)
+# TODO: Implement homography computation from COLMAP poses + ground plane assumption
 
 defaults:
   - data: komainu_colmap
   - model: two_view_pipeline
   - model@model.extractor: extractor/superpoint_open
   - model@model.matcher: matcher/lightglue
-  - model@model.ground_truth: matcher/homography_matcher
+  - model@model.ground_truth: matcher/depth_matcher
   - _self_
 
 model:
   extractor:
     max_num_keypoints: 512
+    force_num_keypoints: true  # Required for batch training
     trainable: false  # Freeze SuperPoint, only train LightGlue
   matcher:
     input_dim: 256
@@ -30,7 +34,7 @@ train:
     on_epoch: true
     exp_div_10: 3
   batch_size: 2
-  compile: false
+  compile: null  # Set to "default", "reduce-overhead", etc. to enable torch.compile
   load_experiment: null  # Set to pretrained experiment name if fine-tuning
   dataset_callback_fn: null  # No dynamic sampling for small dataset
 
