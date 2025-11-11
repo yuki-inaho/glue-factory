@@ -38,6 +38,7 @@ dependencies = [
     "ipython>=8.18.1",
     "ruff>=0.14.0",
     "tensordict",
+    "plotly>=6.4.0",
 ]
 urls = { Repository = "https://github.com/cvg/glue-factory" }
 

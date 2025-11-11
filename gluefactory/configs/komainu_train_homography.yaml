@@ -1,0 +1,41 @@
+# Training configuration for komainu_colmap dataset
+# Uses homography-based ground truth (depth maps not available yet)
+
+defaults:
+  - data: komainu_colmap
+  - model: two_view_pipeline
+  - model/extractor: superpoint_open
+  - model/matcher: lightglue
+  - model/ground_truth: homography_matcher
+  - _self_
+
+model:
+  extractor:
+    max_num_keypoints: 512
+    trainable: false  # Freeze SuperPoint, only train LightGlue
+  matcher:
+    input_dim: 256
+    depth_confidence: -1
+    width_confidence: -1
+
+train:
+  seed: 42
+  epochs: 3
+  log_every_iter: 10
+  eval_every_iter: 100
+  lr: 1.0e-4
+  lr_schedule:
+    start: 2
+    type: exp
+    on_epoch: true
+    exp_div_10: 3
+  batch_size: 2
+  compile: false
+  load_experiment: null  # Set to pretrained experiment name if fine-tuning
+  dataset_callback_fn: null  # No dynamic sampling for small dataset
+
+data:
+  batch_size: 2
+  num_workers: 2
+
+# Experiment will be saved to: outputs/training/komainu_train_homography/

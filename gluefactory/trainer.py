@@ -51,7 +51,13 @@ def compose_loss(loss_dict: LossMetrics, compose_str: str) -> torch.Tensor:
     return loss
 
 
-@torch.compiler.set_stance("force_eager")
+# set_stance is only available in PyTorch 2.3+
+if hasattr(torch.compiler, "set_stance"):
+    set_stance_decorator = torch.compiler.set_stance("force_eager")
+else:
+    set_stance_decorator = lambda f: f
+
+@set_stance_decorator
 @torch.no_grad()
 def run_evaluation(
     model: BaseModel | torch.nn.parallel.DistributedDataParallel,
@@ -915,7 +921,7 @@ class Trainer:
                 )
         return results, pr_metrics, figures
 
-    @torch.compiler.set_stance("force_eager")
+    @set_stance_decorator
     def test_loop(
         self,
         output_dir: Path,
