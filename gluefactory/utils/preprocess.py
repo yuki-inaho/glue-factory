@@ -7,6 +7,10 @@ import kornia
 import numpy as np
 import torch
 from omegaconf import OmegaConf
+from torch import nn
+
+from ..geometry import transforms as gtr
+from . import misc
 
 
 def get_divisible_wh(w, h, df=None):
@@ -27,6 +31,8 @@ class ImagePreprocessor:
         "antialias": True,
         "square_pad": False,
         "add_padding_mask": False,
+        "crop_if_short_side": False,
+        "crop_mode": "center",
     }
 
     def __init__(self, conf) -> None:
@@ -52,15 +58,17 @@ class ImagePreprocessor:
                 interpolation=interpolation,
             )
         scale = torch.Tensor([img.shape[-1] / w, img.shape[-2] / h]).to(img)
-        T = np.diag([scale[0], scale[1], 1])
+        r_t_img = np.diag([scale[0], scale[1], 1])
 
         data = {
             "scales": scale,
             "image_size": np.array(size[::-1]),
-            "transform": T,
+            "transform": r_t_img,
             "original_image_size": np.array([w, h]),
         }
-        if self.conf.square_pad:
+        if self.conf.square_pad and (
+            self.conf.side == "long" or not self.conf.crop_if_short_side
+        ):
             padding_data = square_pad(
                 img,
                 return_mask=self.conf.add_padding_mask,
@@ -69,9 +77,39 @@ class ImagePreprocessor:
             data["corners_hw"] = padding_data["corners_hw"].numpy()
             if "valid" in padding_data:
                 data["padding_mask"] = padding_data["valid"]
+            data["transform"] = padding_data["transform"] @ data["transform"]
+        elif (
+            self.conf.side == "short"
+            and self.conf.crop_if_short_side
+            and self.conf.square_pad
+        ):
+            crop_data = square_crop(img, mode=self.conf.crop_mode)
+            data["image"] = crop_data["image"]
+            data["image_size"] = np.array(crop_data["image"].shape[-2:][::-1])  # w, h
+            data["corners_hw"] = crop_data["corners_hw"].numpy()
+            data["transform"] = crop_data["transform"] @ data["transform"]
         else:
             data["image"] = img
         return data
+
+    def interpolate(
+        self,
+        img: torch.Tensor,
+        norm_t_img: np.ndarray,
+        target_hw: Tuple[int, int],
+        mode: str = "bilinear",
+    ) -> dict:
+        """Interpolate an image with a given transform to a target size."""
+        if self.conf.resize is None and self.conf.edge_divisible_by is None:
+            assert not self.conf.square_pad
+            return img
+        return kornia.geometry.transform.warp_perspective(
+            img[None],
+            torch.as_tensor(norm_t_img, device=img.device, dtype=torch.float32)[None],
+            dsize=target_hw,
+            mode=mode,
+            align_corners=False,
+        )[0]
 
     def load_image(self, image_path: Path) -> dict:
         return self(load_image(image_path))
@@ -146,6 +184,35 @@ def square_pad(
         else:
             valid[..., :h, :w] = True
         ret["valid"] = valid
+    return ret
+
+
+def square_crop(
+    image: torch.Tensor,
+    mode: str = "center",
+) -> dict[str, torch.Tensor]:
+    """Crop the image to a square shape."""
+    h, w = image.shape[-2:]
+    hw = min(h, w)
+    if mode == "random":
+        oy = np.random.randint(0, h - hw + 1)
+        ox = np.random.randint(0, w - hw + 1)
+        image = image[..., oy : oy + hw, ox : ox + hw]
+    elif mode == "center":
+        oy = (h - hw) // 2
+        ox = (w - hw) // 2
+        image = image[..., oy : oy + hw, ox : ox + hw]
+    elif mode == "top":
+        image = image[..., :hw, :hw]
+        ox, oy = 0, 0
+    else:
+        raise ValueError(f"Unknown crop mode {mode}")
+    corners_hw = torch.as_tensor(
+        [[oy, ox], [oy + hw, ox + hw]], dtype=int, device=image.device
+    )
+    crop_t_img = torch.eye(3, device=image.device)
+    crop_t_img[:2, 2] = torch.tensor([-ox, -oy], device=image.device)
+    ret = {"image": image, "corners_hw": corners_hw, "transform": crop_t_img}
     return ret
 
 
@@ -231,3 +298,17 @@ def zero_pad(size, *images):
         padded[:h, :w] = image
         ret.append(padded)
     return ret
+
+
+class ImageNetNormalizer(nn.Module):
+    """Module to normalize images with ImageNet statistics."""
+
+    def __init__(self):
+        super().__init__()
+        mean = torch.tensor([0.485, 0.456, 0.406])
+        std = torch.tensor([0.229, 0.224, 0.225])
+        self.register_buffer("mean", mean)
+        self.register_buffer("std", std)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return ((x.transpose(-3, -1) - self.mean) / self.std).transpose(-3, -1)

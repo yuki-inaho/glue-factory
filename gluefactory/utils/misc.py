@@ -9,6 +9,7 @@ import numpy as np
 import torch
 import torch.multiprocessing as tmp
 import torch.nn.functional as F
+import torchvision.transforms.functional as tvf
 
 from . import tensor, types
 
@@ -51,7 +52,7 @@ def map_tensor(input_, func):
     elif isinstance(input_, Mapping):
         return {k: map_tensor(sample, func) for k, sample in input_.items()}
     elif isinstance(input_, Sequence):
-        return [map_tensor(sample, func) for sample in input_]
+        return input_.__class__([map_tensor(sample, func) for sample in input_])
     elif isinstance(input_, np.ndarray):
         return func(torch.from_numpy(input_))
     elif input_ is None:
@@ -61,10 +62,20 @@ def map_tensor(input_, func):
 
 
 def batch_to_numpy(batch):
-    return map_tensor(batch, lambda tensor: tensor.cpu().numpy())
+    return map_tensor(
+        batch,
+        lambda tensor: (
+            tensor.cpu().numpy()
+            if tensor.dtype != torch.bfloat16
+            else tensor.cpu().to(torch.float32).numpy()
+        ),
+    )
 
 
-def batch_to_device(batch, device, non_blocking=True):
+def batch_to_device(batch, device, non_blocking=False):
+    if device == "numpy":
+        return batch_to_numpy(batch)
+
     def _func(tensor):
         return tensor.to(device=device, non_blocking=non_blocking)
 
@@ -80,6 +91,23 @@ def pmap(
     multi_pool.join()
     multi_pool.terminate()
     return results
+
+
+def all_gather(
+    item: torch.Tensor | Any, num_devices: int | None = None, dim: int | None = 0
+) -> torch.Tensor | Sequence[torch.Tensor]:
+    if num_devices is None:
+        num_devices = torch.distributed.get_world_size()
+    if isinstance(item, torch.Tensor):
+        item_list = [torch.zeros_like(item) for _ in range(num_devices)]
+        torch.distributed.all_gather(item_list, item)
+    else:
+        item_list = [None for _ in range(num_devices)]
+        torch.distributed.all_gather_object(item_list, item)
+    if dim is None:
+        return item_list
+    else:
+        return torch.cat(item_list, dim=dim)
 
 
 def grad_norm(params):
@@ -133,7 +161,7 @@ def get_twoview(data, idx):
     ri = idx[-1]
     assert idx == f"{li}to{ri}"
     data_lr = {k[:-4] + "0to1": v for k, v in data.items() if k[-4:] == f"{li}to{ri}"}
-    data_rl = {k[:-4] + "1to0": v for k, v in data.items() if k[-4:] == f"{ri}ito{li}"}
+    data_rl = {k[:-4] + "1to0": v for k, v in data.items() if k[-4:] == f"{ri}to{li}"}
     data_l = {
         k[:-1] + "0": v for k, v in data.items() if k[-1:] == li and k[-3:-1] != "to"
     }
@@ -206,12 +234,33 @@ def concat_tree(trees: Iterable[types.Tree], check: bool = False) -> types.Tree:
     def combine(val_list: Sequence[Any]) -> Any:
         if isinstance(val_list[0], (torch.Tensor, tensor.TensorWrapper)):
             return torch.cat(val_list)
+        elif isinstance(val_list[0], tuple):
+            return tuple(
+                [combine([v[i] for v in val_list]) for i in range(len(val_list[0]))]
+            )
         elif isinstance(val_list[0], Sequence):
             return sum(val_list, start=[])
+        elif isinstance(val_list[0], (int, float)):
+            return val_list
         else:
             raise TypeError(f"Cannot combine values of type {type(val_list[0])}")
 
     return pack_tree(trees, check=check, fn=combine)
+
+
+def split_tree(tree, num_splits: int) -> list[types.Tree]:
+    """Split a tree into a list of trees along the first dimension of tensors."""
+    flat_tree = flatten_dict(tree)
+
+    split_trees = [{}] * num_splits
+    for k, v in flat_tree.items():
+        if isinstance(v, (torch.Tensor, tensor.TensorWrapper)):
+            splits = torch.split(v, num_splits, dim=0)
+            for i in range(num_splits):
+                split_trees[i][k] = splits[i]
+        else:
+            raise NotImplementedError(f"Cannot split values of type {type(v)}")
+    return [unflatten_dict(t) for t in split_trees]
 
 
 def compare_tree(
@@ -295,7 +344,9 @@ def flat_map(
 ) -> types.Tree:
     """Apply a function to each item in a flattened dictionary."""
     flat_dict = flatten_dict(input_, sep=sep)
-    out = {k: func(k, v) for k, v in flat_dict.items()}
+    out = {}
+    for k in sorted(flat_dict.keys()):
+        out[k] = func(k, flat_dict[k])
     if unflatten:
         out = unflatten_dict(out, sep=sep)
     return out
@@ -322,6 +373,27 @@ def tree_map(
     return flat_map(input_, func=lambda k, v: func(v), sep=sep, unflatten=unflatten)
 
 
+def tree_tensormap(
+    input_: types.Tree,
+    func: Callable[[torch.Tensor], torch.Tensor],
+    sep: str | None = None,
+    unflatten: bool = True,
+) -> types.Tree:
+    """Apply a function to each tensor item in a flattened dictionary."""
+    return flat_map(
+        input_,
+        func=lambda k, v: func(v) if isinstance(v, torch.Tensor) else v,
+        sep=sep,
+        unflatten=unflatten,
+    )
+
+
+def tree_all_gather(tree: types.Tree) -> types.Tree:
+    """Gather all tensors from all devices."""
+    trees = all_gather(tree, dim=None)
+    return concat_tree(trees)
+
+
 def tree_summary(tree: types.Tree, flatten: bool = False) -> str:
     """Summarize a tree structure."""
 
@@ -334,7 +406,7 @@ def tree_summary(tree: types.Tree, flatten: bool = False) -> str:
             return f"ndarray{t.shape} {t.dtype}"
         elif isinstance(t, (list, tuple)):
             return f"{type(t).__name__}[{len(t)}]"
-        elif isinstance(t, int, str, bytes, float, bool):
+        elif isinstance(t, (int, str, bytes, float, bool)):
             return str(t)
         elif t is None:
             return "None"
@@ -349,6 +421,10 @@ def tree_summary(tree: types.Tree, flatten: bool = False) -> str:
     )
 
 
+def print_summary(tree: types.Tree, flatten: bool = False):
+    print(tree_summary(tree, flatten=flatten))
+
+
 def to_sequence(map):
     return map.flatten(-2).transpose(-1, -2)
 
@@ -359,6 +435,75 @@ def to_map(sequence):
     assert e * e == n
     assert e * e == n
     sequence.transpose(-1, -2).unflatten(-1, [e, e])
+
+
+def resize_image(
+    image,
+    hw_in: tuple[int, int],
+    hw_out: tuple[int, int],
+    interpolation: str = "bilinear",
+    antialias: bool = False,
+):
+    if hw_in[0] >= 0 and hw_in[1] >= 0:
+        # Find the axes that match hw_in
+        hw_dims = [image.shape.index(dim) for dim in (hw_in)]
+    else:
+        # You can also specify the index of the axis from behind
+        hw_dims = hw_in
+        hw_in = (image.shape[hw_dims[0]], image.shape[hw_dims[1]])
+
+    if hw_in == hw_out:
+        # Nothing to do
+        return image
+    image_in = image.moveaxis(hw_dims, (-2, -1))
+    interpolation = {
+        "nearest": tvf.InterpolationMode.NEAREST,
+        "nn": tvf.InterpolationMode.NEAREST,
+        "linear": tvf.InterpolationMode.BILINEAR,
+        "bilinear": tvf.InterpolationMode.BILINEAR,
+        "cubic": tvf.InterpolationMode.BICUBIC,
+        "bicubic": tvf.InterpolationMode.BICUBIC,
+    }[interpolation]
+    resize_op = tvf.resize(
+        image_in, size=hw_out, interpolation=interpolation, antialias=antialias
+    )
+    image_out = resize_op.moveaxis((-2, -1), hw_dims)
+    return image_out
+
+
+def l2_normalize(
+    tensor: torch.Tensor, dim: int = -1, eps: float = 1e-10
+) -> torch.Tensor:
+    norm = torch.norm(tensor, p=2, dim=dim, keepdim=True).clamp_min(eps)
+    return tensor / norm
+
+
+def is_image_of_shape(image: torch.Tensor, hw: tuple[int, int]) -> bool:
+    h, w = hw
+    return h in image.shape and w in image.shape
+
+
+def resize_image_like(
+    tree: types.Tree,
+    hw_in: tuple[int, int],
+    hw_out: tuple[int, int],
+    interpolation: str = "bilinear",
+    antialias: bool = False,
+):
+    return tree_map(
+        tree,
+        lambda x: (
+            resize_image(
+                x,
+                hw_in=hw_in,
+                hw_out=hw_out,
+                interpolation=interpolation,
+                antialias=antialias,
+            )
+            if isinstance(x, torch.Tensor) and is_image_of_shape(x, hw_in)
+            else x
+        ),
+    )
 
 
 def pad_to_length(
@@ -476,7 +621,7 @@ def build_heatmap(img, patches, corners):
     return hmap, (hmap > 0.0).float()  # bxhxw
 
 
-def get_image_coords(img):
+def get_image_coords(img, expand: bool = False):
     h, w = img.shape[-2:]
     coords = (
         torch.stack(
@@ -488,7 +633,10 @@ def get_image_coords(img):
             dim=0,
         ).permute(1, 2, 0)
     ) + 0.5
-    return coords[None]
+    coords = coords[None]
+    if expand:
+        coords = coords.expand(img.shape[0], -1, -1, -1)
+    return coords
 
 
 def masked_mean(
@@ -499,7 +647,7 @@ def masked_mean(
 ) -> torch.Tensor:
     assert tensor.ndim == mask.ndim, (tensor.shape, mask.shape)
     sum_tensor = torch.where(mask, tensor, 0.0).sum(dim=dim, keepdim=keepdim)
-    count = mask.sum(dim=dim, keepdim=keepdim).clamp_min(1e-6)
+    count = mask.sum(dim=dim, keepdim=keepdim).clamp_min(1)
     return sum_tensor / count
 
 
@@ -520,6 +668,7 @@ def grid_sample(
     coords: torch.Tensor,
     interpolation: str = "bilinear",
     align_corners: bool = False,
+    padding_mode: str = "zeros",
 ):
     assert image.dim() == coords.dim()
     is_batched = image.dim() == 4
@@ -527,7 +676,11 @@ def grid_sample(
     if is_batched:
         assert coords.dim() == 4
         return F.grid_sample(
-            image.to(coords.device), coords, interpolation, align_corners=False
+            image.to(coords.device),
+            coords,
+            interpolation,
+            align_corners=align_corners,
+            padding_mode=padding_mode,
         )
     else:
         return F.grid_sample(
@@ -591,24 +744,26 @@ def hwc_from_chw(image):
     return image.transpose(-3, -2).transpose(-2, -1)
 
 
+# @AMP_CUSTOM_FWD_F32
 def denormalize_coords(coords, hw: tuple[int, int] | None = None) -> torch.Tensor:
     """Denormalize coordinates from [-1, 1] to [0, H] or [0, W] (COLMAP)"""
     coords = coords.clone()
     if hw is None:
         hw = coords.shape[-3:-1]
-    coords[..., 0] = (coords[..., 0] + 1) / 2 * (hw[1] - 1)
-    coords[..., 1] = (coords[..., 1] + 1) / 2 * (hw[0] - 1)
-    return coords
+    return torch.stack(
+        [(coords[..., 0] + 1) / 2 * hw[1], (coords[..., 1] + 1) / 2 * hw[0]], dim=-1
+    )
 
 
+# @AMP_CUSTOM_FWD_F32
 def normalize_coords(coords, hw: tuple[int, int] | None = None) -> torch.Tensor:
     """Normalize coordinates from [0, H] or [0, W] (COLMAP) to [-1, 1]"""
     coords = coords.clone()
     if hw is None:
         hw = coords.shape[-3:-1]
-    coords[..., 0] = coords[..., 0] / (hw[1] - 1) * 2 - 1
-    coords[..., 1] = coords[..., 1] / (hw[0] - 1) * 2 - 1
-    return coords
+    return torch.stack(
+        [coords[..., 0] / hw[1] * 2 - 1, coords[..., 1] / hw[0] * 2 - 1], dim=-1
+    )
 
 
 def cycle_dist(
@@ -622,6 +777,91 @@ def cycle_dist(
         - (q_to_ref_to_q if normalized else denormalize_coords(q_to_ref_to_q)),
         dim=-1,
     )
+
+
+def interpolate_points(
+    pts: torch.Tensor,  # ... x N X 2
+    features: torch.Tensor,  # ... x H x W x D
+    mode: str = "bilinear",
+    normalize: bool = False,
+    is_chw: bool = False,
+    align_corners: bool = False,
+    padding_mode: str = "zeros",
+) -> torch.Tensor:  # ... x N x D
+    # Normalize to [-1, 1] for grid sampling
+    if not is_chw:
+        features = chw_from_hwc(features)
+    if normalize:
+        pts = normalize_coords(pts, features.shape[-2:])
+    sampled_features = grid_sample(
+        features,
+        pts[..., None, :, :],
+        interpolation=mode,
+        align_corners=align_corners,
+        padding_mode=padding_mode,
+    )
+    sampled_features = hwc_from_chw(sampled_features)[..., 0, :, :]
+    return sampled_features
+
+
+def interpolate_patches(
+    pts: torch.Tensor,  # B x N x 2
+    features: torch.Tensor,
+    ps: int,
+    mode: str = "nearest",
+    normalize: bool = False,
+    is_chw: bool = False,
+    align_corners: bool = False,
+    padding_mode: str = "zeros",
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:  # B x N x D x ps x ps, B x N x 2
+    if not is_chw:
+        features = chw_from_hwc(features)
+    if normalize:
+        pts_i = pts
+    else:
+        pts_i = denormalize_coords(pts, features.shape[-2:])
+    dummy_patch = torch.zeros(
+        (1, 1, ps, ps), device=features.device, dtype=features.dtype
+    )
+    p_xy = get_image_coords(dummy_patch)
+    cxy_i = torch.round(pts_i - ps / 2 - 0.5)
+    p_xy_i = cxy_i[:, :, None, None, :] + p_xy[:, None]
+    p_xy_n = normalize_coords(p_xy_i, features.shape[-2:])
+    patches = torch.vmap(grid_sample, in_dims=(None, 1), out_dims=1)(
+        features,
+        p_xy_n,
+        interpolation=mode,
+        align_corners=align_corners,
+        padding_mode=padding_mode,
+    )
+    if not is_chw:
+        patches = hwc_from_chw(patches)
+    return patches, p_xy_n, cxy_i
+
+
+def patch_interpolate_points(
+    pts: torch.Tensor,  # B x N X 2
+    patches: torch.Tensor,  # B x N x D x ps x ps OR B x N x ps x ps x D
+    **kwargs,
+):
+    return torch.vmap(interpolate_points, in_dims=0, out_dims=0)(
+        pts[:, :, None],
+        patches,
+        **kwargs,
+    )[..., 0, :]
+
+
+def log_softmax(scores: torch.Tensor, dim: int | tuple = -1) -> torch.Tensor:
+    """Numerically stable log softmax."""
+    if isinstance(dim, int):
+        return torch.log_softmax(scores, dim=dim)
+    else:
+        last = tuple(range(-len(dim), 0))
+        scores = scores.moveaxis(dim, last)
+        log_probs = torch.log_softmax(scores.flatten(-len(dim)), dim=-1).reshape(
+            *scores.shape
+        )
+        return log_probs.moveaxis(last, dim)
 
 
 def interpolate_matches(

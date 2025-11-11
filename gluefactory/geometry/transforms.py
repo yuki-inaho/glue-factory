@@ -74,7 +74,7 @@ def transform_points(T, points):
 
 
 def is_inside(pts, shape):
-    return (pts > 0).all(-1) & (pts < shape[:, None]).all(-1)
+    return (pts > 0).all(-1) & (pts < shape).all(-1)
 
 
 def so3exp_map(w, eps: float = 1e-7):

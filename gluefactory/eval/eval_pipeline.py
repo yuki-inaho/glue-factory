@@ -11,7 +11,7 @@ from tqdm import tqdm
 
 from .. import datasets
 from ..models.cache_loader import CacheLoader
-from ..utils import export, misc
+from ..utils import export, misc, tools
 from ..visualization import viz2d
 from . import io, utils
 
@@ -61,17 +61,28 @@ def exists_eval(dir):
 
 
 class EvalPipeline:
-    default_conf = {}
+    default_conf = {
+        "num_samples": None,  # Number of samples to run eval on (None=all)
+    }
+    eval_data_conf = {}
 
-    export_keys = []
-    optional_export_keys = []
+    export_keys = ()
+    optional_export_keys = ()
+
+    default_x: str | None = None  # Default x-axis for inspection plots
+    default_y: str | None = None  # Default y-axis for inspection plots
+
+    num_samples: int | None = None  # Number of samples to run eval on (None=all)
 
     main_metric = "???"  # You need to define this.
 
     def __init__(self, conf):
         """Assumes"""
         self.default_conf = OmegaConf.create(self.default_conf)
-        self.conf = OmegaConf.merge(self.default_conf, conf)
+        self.conf = OmegaConf.merge(EvalPipeline.default_conf, self.default_conf, conf)
+        self.__class__.num_samples = self.conf.num_samples
+        self.export_keys = list(self.export_keys)
+        self.optional_export_keys = list(self.optional_export_keys)
         self._init(self.conf)
 
     def _init(self, conf):
@@ -110,7 +121,12 @@ class EvalPipeline:
         f = {}
         if not exists_eval(experiment_dir) or overwrite_eval or overwrite:
             logger.info(f"Loop 2: Evaluating predictions in {pred_file}.")
-            s, f, r = self.run_eval(self.get_dataloader(), pred_file)
+            s, f, r = self.run_eval(
+                self.get_dataloader(
+                    OmegaConf.merge(self.default_conf["data"], self.eval_data_conf)
+                ),
+                pred_file,
+            )
             save_eval(experiment_dir, s, f, r)
             logger.info(f"Loop 2 finished. Results saved to {experiment_dir}.")
         s, r = load_eval(experiment_dir)
@@ -158,7 +174,7 @@ class RelativePosePipeline(EvalPipeline):
 
     main_metric = "rel_pose_error_mAA"
 
-    export_keys = [
+    export_keys = (
         "keypoints0",
         "keypoints1",
         "keypoint_scores0",
@@ -167,8 +183,8 @@ class RelativePosePipeline(EvalPipeline):
         "matches1",
         "matching_scores0",
         "matching_scores1",
-    ]
-    optional_export_keys = []
+    )
+    optional_export_keys = ()
 
     # Add custom evals here (dataset specific)
     eval_hooks: Sequence[Callable[[Any, Any], dict[str, float]]] = ()
@@ -176,10 +192,12 @@ class RelativePosePipeline(EvalPipeline):
     def __init__(self, conf):
         """Assumes"""
         self.default_conf = OmegaConf.create(self.default_conf)
-        self.conf = OmegaConf.merge(
-            RelativePosePipeline.default_conf, self.default_conf, conf
+        conf = OmegaConf.merge(
+            RelativePosePipeline.default_conf,
+            self.default_conf,
+            conf,
         )
-        self._init(self.conf)
+        super().__init__(conf)
 
     def _init(self, conf):
         raise NotImplementedError("Add download instructions here")
@@ -189,7 +207,7 @@ class RelativePosePipeline(EvalPipeline):
         """Returns a data loader with samples for each eval datapoint"""
         data_conf = data_conf if data_conf else self.default_conf["data"]
         dataset = datasets.get_dataset(data_conf["name"])(data_conf)
-        return dataset.get_data_loader("test")
+        return dataset.get_data_loader("test", num_samples=self.num_samples)
 
     def get_predictions(self, experiment_dir, model=None, overwrite=False):
         """Export a prediction file for each eval datapoint"""
@@ -304,6 +322,11 @@ class RelativePosePipeline(EvalPipeline):
         summaries = {}
         for k, v in results.items():
             arr = np.array(v)
+            if k.endswith("pose_error"):
+                thresholds = [5, 10, 20]
+                aucs = tools.AUCMetric(thresholds, elements=v).compute()
+                for i, th in enumerate(thresholds):
+                    summaries[f"{k}@{th}°"] = round(aucs[i], 3)
             if not np.issubdtype(np.array(v).dtype, np.number):
                 continue
             summaries[f"m{k}"] = round(np.mean(arr), 3)

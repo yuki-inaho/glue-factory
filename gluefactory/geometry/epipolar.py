@@ -18,16 +18,16 @@ def T_to_F(
 
 
 def E_to_F(cam0: reconstruction.Camera, cam1: reconstruction.Camera, E: torch.Tensor):
-    assert cam0._data.shape[-1] == 6, "only pinhole cameras supported"
-    assert cam1._data.shape[-1] == 6, "only pinhole cameras supported"
+    assert cam0.data_.shape[-1] == 6, "only pinhole cameras supported"
+    assert cam1.data_.shape[-1] == 6, "only pinhole cameras supported"
     K0 = cam0.calibration_matrix()
     K1 = cam1.calibration_matrix()
     return K1.inverse().transpose(-1, -2) @ E @ K0.inverse()
 
 
 def F_to_E(cam0: reconstruction.Camera, cam1: reconstruction.Camera, F: torch.Tensor):
-    assert cam0._data.shape[-1] == 6, "only pinhole cameras supported"
-    assert cam1._data.shape[-1] == 6, "only pinhole cameras supported"
+    assert cam0.data_.shape[-1] == 6, "only pinhole cameras supported"
+    assert cam1.data_.shape[-1] == 6, "only pinhole cameras supported"
     K0 = cam0.calibration_matrix()
     K1 = cam1.calibration_matrix()
     return K1.transpose(-1, -2) @ F @ K0
@@ -94,8 +94,8 @@ def generalized_epi_dist(
         else:
             return sym_epipolar_distance(p0, p1, E, squared=False)
     else:
-        assert cam0._data.shape[-1] == 6
-        assert cam1._data.shape[-1] == 6
+        assert cam0.data_.shape[-1] == 6
+        assert cam1.data_.shape[-1] == 6
         F = T_to_F(cam0, cam1, T_0to1)
         if all:
             return sym_epipolar_distance_all(kpts0, kpts1, F)
@@ -162,3 +162,37 @@ def relative_pose_error(T_0to1, R, t, ignore_gt_t_thr=0.0, eps=1e-10):
     r_err = angle_error_mat(R, R_gt)
 
     return t_err, r_err
+
+
+def check_epipolar_intersection(
+    x_i0: torch.Tensor,
+    i1_F_i0: torch.Tensor,
+    width1: int | torch.Tensor,
+    height1: int | torch.Tensor,
+) -> torch.BoolTensor:
+    x_i0 = tr.to_homogeneous(x_i0)  # (..., 3)
+    L_B = x_i0 @ i1_F_i0.T
+
+    l1, l2, l3 = L_B.split(1, dim=1)
+
+    eps = 1e-6
+
+    # Vertical boundary checks (x=0, x=W_B)
+    mask_v = torch.abs(l2) > eps
+    l2_inv = torch.where(mask_v, 1.0 / l2, torch.tensor(0.0, device=x_i0.device))
+
+    y0 = -l3 * l2_inv
+    yW = -(l1 * width1 + l3) * l2_inv
+
+    check_v = mask_v & (((y0 >= 0) & (y0 <= height1)) | ((yW >= 0) & (yW <= height1)))
+
+    # Horizontal boundary checks (y=0, y=H_B)
+    mask_h = torch.abs(l1) > eps
+    l1_inv = torch.where(mask_h, 1.0 / l1, torch.tensor(0.0, device=x_i0.device))
+
+    x0 = -l3 * l1_inv
+    xH = -(l2 * height1 + l3) * l1_inv
+
+    check_h = mask_h & (((x0 >= 0) & (x0 <= width1)) | ((xH >= 0) & (xH <= width1)))
+
+    return (check_v | check_h).squeeze(-1)

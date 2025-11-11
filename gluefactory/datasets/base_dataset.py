@@ -7,11 +7,15 @@ import collections
 import dataclasses
 import functools
 import logging
+import os
 from abc import ABCMeta, abstractmethod
 
+import numpy as np
 import omegaconf
 import torch
+import torch.distributed as dist
 from omegaconf import OmegaConf
+from tensordict import TensorClass
 from torch.utils.data import DataLoader, Sampler, get_worker_info
 from torch.utils.data._utils.collate import (
     default_collate_err_msg_format,
@@ -60,6 +64,8 @@ def collate(batch):
                 storage = elem.untyped_storage()._new_shared(numel)  # noqa: F841
             except AttributeError:
                 storage = elem.storage()._new_shared(numel)  # noqa: F841
+        return torch.stack(batch, dim=0)
+    elif isinstance(elem, TensorClass):
         return torch.stack(batch, dim=0)
     elif (
         elem_type.__module__ == "numpy"
@@ -173,6 +179,7 @@ class BaseDataset(metaclass=ABCMeta):
             worker_init_fn=worker_init_fn,
             collate_fn=collate,
             prefetch_factor=None,
+            shuffle=split == "train",
             **kwargs,
         )
 
@@ -191,17 +198,36 @@ class BaseDataset(metaclass=ABCMeta):
         distributed=False,
         epoch: int = 0,
         overfit: bool = False,
+        num_samples: int | None = None,
     ):
         """Return a data loader for a given split."""
         assert split in ["train", "val", "test"]
-        if overfit:
-            return self.get_overfit_loader(split)
-        dataset = self.get_dataset(split, epoch=epoch)
+        with tools.fork_rng(self.conf.seed + epoch):
+            if overfit:
+                return self.get_overfit_loader(split)
+            dataset = self.get_dataset(split, epoch=epoch)
         try:
             batch_size = self.conf[split + "_batch_size"]
         except omegaconf.MissingMandatoryValue:
             batch_size = self.conf.batch_size
-        num_workers = self.conf.get("num_workers", batch_size)
+        if num_samples is not None:
+            dataset.items = np.random.default_rng(42).permutation(dataset.items)[
+                :num_samples
+            ]
+        max_num_workers = 0
+        if hasattr(os, "sched_getaffinity"):
+            max_num_workers = len(os.sched_getaffinity(0))
+        elif os.cpu_count() is not None:
+            max_num_workers = os.cpu_count()
+        if distributed:
+            # limit num_workers per process in distributed training
+            max_num_workers = max_num_workers // dist.get_world_size()
+
+        num_workers = self.conf.get("num_workers", max_num_workers)
+        if num_workers is None or num_workers < 0:
+            num_workers = max_num_workers
+        num_workers = min(num_workers, max_num_workers)
+        logger.info(f"{split} DataLoader num_workers: {num_workers} {os.cpu_count()}")
         drop_last = True if split == "train" else False
         if distributed:
             shuffle = False

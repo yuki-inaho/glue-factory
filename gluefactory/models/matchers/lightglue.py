@@ -50,16 +50,23 @@ def apply_cached_rotary_emb(freqs: torch.Tensor, t: torch.Tensor) -> torch.Tenso
 
 
 class LearnableFourierPositionalEncoding(nn.Module):
-    def __init__(self, M: int, dim: int, F_dim: int = None, gamma: float = 1.0) -> None:
+    def __init__(
+        self, M: int, F_dim, hidden_dim: int = None, gamma: float = 1.0
+    ) -> None:
         super().__init__()
-        F_dim = F_dim if F_dim is not None else dim
         self.gamma = gamma
-        self.Wr = nn.Linear(M, F_dim // 2, bias=False)
+        if hidden_dim is None:
+            self.Wh = nn.Identity()
+            hidden_dim = M
+        else:
+            self.Wh = nn.Linear(M, hidden_dim, bias=False)
+            nn.init.normal_(self.Wh.weight.data, mean=0, std=self.gamma**-2)
+        self.Wr = nn.Linear(hidden_dim, F_dim // 2, bias=False)
         nn.init.normal_(self.Wr.weight.data, mean=0, std=self.gamma**-2)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """encode position vector"""
-        projected = self.Wr(x)
+        projected = self.Wr(self.Wh(x))
         cosines, sines = torch.cos(projected), torch.sin(projected)
         emb = torch.stack([cosines, sines], 0).unsqueeze(-3)
         return emb.repeat_interleave(2, dim=-1)
@@ -112,7 +119,7 @@ class Attention(nn.Module):
         if self.enable_flash and q.device.type == "cuda":
             # use torch 2.0 scaled_dot_product_attention with flash
             if FLASH_AVAILABLE:
-                args = [x.half().contiguous() for x in [q, k, v]]
+                args = [x.contiguous() for x in [q, k, v]]
                 v = F.scaled_dot_product_attention(*args, attn_mask=mask).to(q.dtype)
                 return v if mask is None else v.nan_to_num()
         elif FLASH_AVAILABLE:
@@ -130,7 +137,12 @@ class Attention(nn.Module):
 
 class SelfBlock(nn.Module):
     def __init__(
-        self, embed_dim: int, num_heads: int, flash: bool = False, bias: bool = True
+        self,
+        embed_dim: int,
+        num_heads: int,
+        flash: bool = False,
+        bias: bool = True,
+        dropout: float = 0.0,
     ) -> None:
         super().__init__()
         self.embed_dim = embed_dim
@@ -147,6 +159,11 @@ class SelfBlock(nn.Module):
             nn.Linear(2 * embed_dim, embed_dim),
         )
 
+        if dropout > 1.0e-4:
+            self.dropout = nn.Dropout(dropout)
+        else:
+            self.dropout = nn.Identity()
+
     def forward(
         self,
         x: torch.Tensor,
@@ -160,12 +177,17 @@ class SelfBlock(nn.Module):
         k = apply_cached_rotary_emb(encoding, k)
         context = self.inner_attn(q, k, v, mask=mask)
         message = self.out_proj(context.transpose(1, 2).flatten(start_dim=-2))
-        return x + self.ffn(torch.cat([x, message], -1))
+        return x + self.dropout(self.ffn(torch.cat([x, message], -1)))
 
 
 class CrossBlock(nn.Module):
     def __init__(
-        self, embed_dim: int, num_heads: int, flash: bool = False, bias: bool = True
+        self,
+        embed_dim: int,
+        num_heads: int,
+        flash: bool = False,
+        bias: bool = True,
+        dropout: float = 0.0,
     ) -> None:
         super().__init__()
         self.heads = num_heads
@@ -186,11 +208,21 @@ class CrossBlock(nn.Module):
         else:
             self.flash = None
 
+        if dropout > 1.0e-4:
+            self.dropout = nn.Dropout(dropout)
+        else:
+            self.dropout = nn.Identity()
+
     def map_(self, func: Callable, x0: torch.Tensor, x1: torch.Tensor):
         return func(x0), func(x1)
 
     def forward(
-        self, x0: torch.Tensor, x1: torch.Tensor, mask: Optional[torch.Tensor] = None
+        self,
+        x0: torch.Tensor,
+        x1: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+        encoding0: Optional[torch.Tensor] = None,
+        encoding1: Optional[torch.Tensor] = None,
     ) -> List[torch.Tensor]:
         qk0, qk1 = self.map_(self.to_qk, x0, x1)
         v0, v1 = self.map_(self.to_v, x0, x1)
@@ -198,6 +230,9 @@ class CrossBlock(nn.Module):
             lambda t: t.unflatten(-1, (self.heads, -1)).transpose(1, 2),
             (qk0, qk1, v0, v1),
         )
+        if encoding0 is not None and encoding1 is not None:
+            qk0 = apply_cached_rotary_emb(encoding0, qk0)
+            qk1 = apply_cached_rotary_emb(encoding1, qk1)
         if self.flash is not None and qk0.device.type == "cuda":
             m0 = self.flash(qk0, qk1, v1, mask)
             m1 = self.flash(
@@ -216,9 +251,73 @@ class CrossBlock(nn.Module):
                 m0, m1 = m0.nan_to_num(), m1.nan_to_num()
         m0, m1 = self.map_(lambda t: t.transpose(1, 2).flatten(start_dim=-2), m0, m1)
         m0, m1 = self.map_(self.to_out, m0, m1)
-        x0 = x0 + self.ffn(torch.cat([x0, m0], -1))
-        x1 = x1 + self.ffn(torch.cat([x1, m1], -1))
+        x0 = x0 + self.dropout(self.ffn(torch.cat([x0, m0], -1)))
+        x1 = x1 + self.dropout(self.ffn(torch.cat([x1, m1], -1)))
         return x0, x1
+
+
+class UniCrossBlock(nn.Module):
+    def __init__(
+        self,
+        embed_dim: int,
+        num_heads: int,
+        flash: bool = False,
+        bias: bool = True,
+        dropout: float = 0.0,
+    ) -> None:
+        super().__init__()
+        self.heads = num_heads
+        dim_head = embed_dim // num_heads
+        self.scale = dim_head**-0.5
+        inner_dim = dim_head * num_heads
+        self.to_k = nn.Linear(embed_dim, inner_dim, bias=bias)
+        self.to_q = nn.Linear(embed_dim, inner_dim, bias=bias)
+        self.to_v = nn.Linear(embed_dim, inner_dim, bias=bias)
+        self.to_out = nn.Linear(inner_dim, embed_dim, bias=bias)
+        self.ffn = nn.Sequential(
+            nn.Linear(2 * embed_dim, 2 * embed_dim),
+            nn.LayerNorm(2 * embed_dim, elementwise_affine=True),
+            nn.GELU(),
+            nn.Linear(2 * embed_dim, embed_dim),
+        )
+        if flash and FLASH_AVAILABLE:
+            self.flash = Attention(True)
+        else:
+            self.flash = None
+
+        if dropout > 1.0e-4:
+            self.dropout = nn.Dropout(dropout)
+        else:
+            self.dropout = nn.Identity()
+
+    def forward(
+        self,
+        x0: torch.Tensor,
+        x1: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+        encoding0: Optional[torch.Tensor] = None,
+        encoding1: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        q = self.to_q(x0)
+        k = self.to_k(x1)
+        v = self.to_v(x1)
+        q, k, v = map(
+            lambda t: t.unflatten(-1, (self.heads, -1)).transpose(1, 2),
+            (q, k, v),
+        )
+        if encoding0 is not None and encoding1 is not None:
+            q = apply_cached_rotary_emb(encoding0, q)
+            k = apply_cached_rotary_emb(encoding1, k)
+        if self.flash is not None and q.device.type == "cuda":
+            m0 = self.flash(q, k, v, mask)
+        else:
+            raise NotImplementedError(
+                "Non-flash attention not implemented for UniCrossBlock"
+            )
+        m0 = m0.transpose(1, 2).flatten(start_dim=-2)
+        m0 = self.to_out(m0)
+        x0 = x0 + self.dropout(self.ffn(torch.cat([x0, m0], -1)))
+        return x0
 
 
 class TransformerLayer(nn.Module):
@@ -233,24 +332,72 @@ class TransformerLayer(nn.Module):
         desc1,
         encoding0,
         encoding1,
+        cross_encoding0: torch.Tensor | None = None,
+        cross_encoding1: torch.Tensor | None = None,
         mask0: Optional[torch.Tensor] = None,
         mask1: Optional[torch.Tensor] = None,
+        checkpointed: bool = False,
+        reentrant: bool = True,
     ):
+        if checkpointed and self.training:
+            return torch.utils.checkpoint.checkpoint(
+                self.forward,
+                desc0,
+                desc1,
+                encoding0,
+                encoding1,
+                cross_encoding0,
+                cross_encoding1,
+                mask0,
+                mask1,
+                use_reentrant=reentrant,
+            )
         if mask0 is not None and mask1 is not None:
-            return self.masked_forward(desc0, desc1, encoding0, encoding1, mask0, mask1)
+            return self.masked_forward(
+                desc0,
+                desc1,
+                encoding0,
+                encoding1,
+                cross_encoding0,
+                cross_encoding1,
+                mask0,
+                mask1,
+            )
         else:
             desc0 = self.self_attn(desc0, encoding0)
             desc1 = self.self_attn(desc1, encoding1)
-            return self.cross_attn(desc0, desc1)
+            return self.cross_attn(
+                desc0,
+                desc1,
+                mask=None,
+                encoding0=cross_encoding0,
+                encoding1=cross_encoding1,
+            )
 
     # This part is compiled and allows padding inputs
-    def masked_forward(self, desc0, desc1, encoding0, encoding1, mask0, mask1):
+    def masked_forward(
+        self,
+        desc0,
+        desc1,
+        encoding0,
+        encoding1,
+        cross_encoding0,
+        cross_encoding1,
+        mask0,
+        mask1,
+    ):
         mask = mask0 & mask1.transpose(-1, -2)
         mask0 = mask0 & mask0.transpose(-1, -2)
         mask1 = mask1 & mask1.transpose(-1, -2)
         desc0 = self.self_attn(desc0, encoding0, mask0)
         desc1 = self.self_attn(desc1, encoding1, mask1)
-        return self.cross_attn(desc0, desc1, mask)
+        return self.cross_attn(
+            desc0,
+            desc1,
+            mask=mask,
+            encoding0=cross_encoding0,
+            encoding1=cross_encoding1,
+        )
 
 
 def sigmoid_log_double_softmax(
@@ -269,11 +416,17 @@ def sigmoid_log_double_softmax(
 
 
 class MatchAssignment(nn.Module):
-    def __init__(self, dim: int) -> None:
+    def __init__(
+        self, dim: int, out_dim: int | None = None, temperature: float | None = None
+    ) -> None:
         super().__init__()
-        self.dim = dim
         self.matchability = nn.Linear(dim, 1, bias=True)
-        self.final_proj = nn.Linear(dim, dim, bias=True)
+        self.final_proj = nn.Linear(dim, out_dim or dim, bias=True)
+
+        if temperature is not None:
+            self.temperature = nn.Parameter(torch.Tensor([temperature]))
+        else:
+            self.temperature = None
 
     def forward(self, desc0: torch.Tensor, desc1: torch.Tensor):
         """build assignment matrix from descriptors"""
@@ -281,6 +434,8 @@ class MatchAssignment(nn.Module):
         _, _, d = mdesc0.shape
         mdesc0, mdesc1 = mdesc0 / d**0.25, mdesc1 / d**0.25
         sim = torch.einsum("bmd,bnd->bmn", mdesc0, mdesc1)
+        if self.temperature is not None:
+            sim = sim * self.temperature
         z0 = self.matchability(desc0)
         z1 = self.matchability(desc1)
         scores = sigmoid_log_double_softmax(sim, z0, z1)
@@ -343,7 +498,7 @@ class LightGlue(BaseModel):
 
         head_dim = conf.descriptor_dim // conf.num_heads
         self.posenc = LearnableFourierPositionalEncoding(
-            2 + 2 * conf.add_scale_ori, head_dim, head_dim
+            2 + 2 * conf.add_scale_ori, head_dim
         )
 
         h, n, d = conf.num_heads, conf.n_layers, conf.descriptor_dim
@@ -472,7 +627,7 @@ class LightGlue(BaseModel):
                     desc1,
                     encoding0,
                     encoding1,
-                    use_reentrant=False,  # Recommended by torch, default was True
+                    use_reentrant=True,  # Recommended by torch, default was True
                 )
             else:
                 desc0, desc1 = self.transformers[i](desc0, desc1, encoding0, encoding1)
@@ -608,6 +763,7 @@ class LightGlue(BaseModel):
 
             del params_i
         losses["total"] /= sum_weights
+        losses["nll_all"] = losses["total"].clone()
 
         # confidences
         if self.training:

@@ -16,6 +16,7 @@ if __name__ == "__main__":
     parser.add_argument("--x", type=str, default=None)
     parser.add_argument("--y", type=str, default=None)
     parser.add_argument("--backend", type=str, default=None)
+    parser.add_argument("--num_samples", type=int, default=None)
     parser.add_argument(
         "--default_plot", type=str, default=TwoViewFrame.default_conf["default"]
     )
@@ -32,6 +33,8 @@ if __name__ == "__main__":
         matplotlib.use(args.backend)
 
     bm = get_benchmark(args.benchmark)
+    if args.num_samples is not None:
+        bm.num_samples = args.num_samples
     dataset = bm.get_dataset()
 
     for name in args.dotlist:
@@ -56,11 +59,16 @@ if __name__ == "__main__":
             summaries[k][name] = v
 
     pprint(summaries)
-
     plt.close("all")
 
+    argvars = vars(args)
+    if args.x is None:
+        argvars["x"] = bm.default_x
+    if args.y is None:
+        argvars["y"] = bm.default_y
+
     frame = GlobalFrame(
-        {"child": {"default": args.default_plot}, **vars(args)},
+        {"child": {"default": args.default_plot}, **argvars},
         results,
         dataset,
         predictions,

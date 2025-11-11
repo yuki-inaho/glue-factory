@@ -58,9 +58,13 @@ class ImagePairsNPZ(BaseDataset, torch.utils.data.Dataset):
             data[f"view{i}"]["T_w2cam"] = reconstruction.Pose.from_4x4mat(
                 torch.from_numpy(pose4x4)
             ).float()
-            data[f"view{i}"]["camera"] = reconstruction.Camera.from_calibration_matrix(
-                torch.from_numpy(intrinsics)
-            ).float()
+            data[f"view{i}"]["camera"] = (
+                reconstruction.Camera.from_calibration_matrix(
+                    torch.from_numpy(intrinsics)
+                )
+                .float()
+                .compose_image_transform(data[f"view{i}"]["transform"])
+            )
 
         data["T_0to1"] = data["view1"]["T_w2cam"] @ data["view0"]["T_w2cam"].inv()
         data["T_1to0"] = data["T_0to1"].inv()

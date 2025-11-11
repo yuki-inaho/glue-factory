@@ -5,7 +5,15 @@ import os
 from pathlib import Path
 from typing import Any, Sequence
 
+import numpy as np
+import torch
 from omegaconf import DictConfig, OmegaConf
+from sklearn.metrics import (
+    auc,
+    average_precision_score,
+    precision_recall_curve,
+    roc_auc_score,
+)
 from torch import nn
 from torch.utils.tensorboard import SummaryWriter as TFSummaryWriter
 
@@ -72,8 +80,11 @@ class SummaryWriter:
                 if name is not None
                 else str(log_dir.relative_to(settings.TRAINING_PATH))
             )
-            wandb_conf = OmegaConf.to_container(conf, resolve=True)
-            wandb_conf = misc.flatten_dict(wandb_conf)
+            if conf is not None:
+                wandb_conf = OmegaConf.to_container(conf, resolve=True)
+                wandb_conf = misc.flatten_dict(wandb_conf)
+            else:
+                wandb_conf = None
             if name_as_run_id and run_id is None:
                 run_id = name.replace("/", "_")
             elif reload_run_id and run_id is None:
@@ -113,21 +124,75 @@ class SummaryWriter:
         if self.use_tensorboard:
             self.writer.add_histogram(tag, values, step)
 
+    def add_mesh(
+        self,
+        tag: str,
+        vertices,
+        faces=None,
+        colors=None,
+        step: int | None = None,
+        point_size: float | None = None,
+        config: dict | None = None,
+    ):
+        """Log a 3D mesh to tensorboard or wandb."""
+        if self.use_wandb:
+            if isinstance(vertices, torch.Tensor):
+                vertices = vertices.detach().cpu().numpy()
+            wandb.log(
+                {tag: wandb.Object3D.from_numpy(vertices)},
+                step=step,
+            )
+        if self.use_tensorboard:
+            config = config if config is not None else {}
+            if point_size is not None:
+                config["material"] = {"cls": "PointsMaterial", "size": point_size}
+
+            def abd(x):
+                if x is None:
+                    return None
+                else:
+                    return x if x.ndim == 3 else x.unsqueeze(0)
+
+            self.writer.add_mesh(
+                tag,
+                abd(vertices),
+                faces=abd(faces),
+                colors=abd(colors),
+                global_step=step,
+                config_dict=config,
+            )
+
     def add_text(self, tag: str, text: str, step: int | None = None):
         """Log text to tensorboard or wandb."""
         if self.use_tensorboard:
             self.writer.add_text(tag, text, step)
 
-    def add_pr_curve(self, tag: str, values, step: int | None = None):
+    def add_pr_curve(self, tag: str, *labels_preds, step: int | None = None):
         """Log a precision-recall curve to tensorboard or wandb."""
         if self.use_wandb:
+            # The wandb PR curve interface is a bit clunky, so we compute the metrics ourselves
             step = 1 if step == 0 else step
             # @TODO: check if this works
-            # wandb.log({"pr": wandb.plots.precision_recall(y_test, y_probas, labels)})
-            wandb.log({tag: wandb.plots.precision_recall(values)}, step=step)
+            labels, preds = labels_preds
+            precision, recall, _ = precision_recall_curve(labels, preds)
+            f1score = 2 * (precision * recall) / (precision + recall + 1e-8)
+            best = np.argmax(f1score)
+            self.add_scalar(f"{tag}/f1", f1score[best], step)
+            self.add_scalar(f"{tag}/precision", precision[best], step)
+            self.add_scalar(f"{tag}/recall", recall[best], step)
+            auprc = auc(recall, precision)
+            self.add_scalar(f"{tag}/auprc", auprc, step)
+            try:
+                auroc = roc_auc_score(labels, preds)
+                self.add_scalar(f"{tag}/auroc", auroc, step)
+            except ValueError as e:
+                logger.warning(f"Could not compute {tag}/auroc at step {step}.")
+
+            ap = average_precision_score(labels, preds)
+            self.add_scalar(f"{tag}/ap", ap, step)
 
         if self.use_tensorboard:
-            self.writer.add_pr_curve(tag, values, step)
+            self.writer.add_pr_curve(tag, *labels_preds, global_step=step)
 
     def define_metric(self, name: str, summary: str | None = None):
         """Define a custom metric for wandb."""

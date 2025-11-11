@@ -13,6 +13,7 @@ class DepthMatcher(BaseModel):
         "th_negative": 5.0,
         "th_epi": None,  # add some more epi outliers
         "th_consistency": None,  # check for projection consistency in px
+        "min_overlap": None,  # min overlap to consider a match
         # GT parameters for lines
         "use_lines": False,
         "n_line_sampled_pts": 50,
@@ -36,7 +37,6 @@ class DepthMatcher(BaseModel):
             ]
 
     @misc.filter_batch_for_jit
-    @misc.AMP_CUSTOM_FWD_F32
     def _forward(self, data):
         return self.match_with_depth(data)
 
@@ -61,6 +61,7 @@ class DepthMatcher(BaseModel):
                 neg_th=self.conf.th_negative,
                 epi_th=self.conf.th_epi,
                 cc_th=self.conf.th_consistency,
+                min_overlap=self.conf.min_overlap,
                 **kw,
             )
         if self.conf.use_lines:

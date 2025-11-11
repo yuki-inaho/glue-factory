@@ -62,6 +62,7 @@ class MegaDepth(base_dataset.BaseDataset):
         "read_image": True,
         "grayscale": False,
         "allow_distractors": False,
+        "squeeze_single_view": False,
         "preprocessing": preprocess.ImagePreprocessor.default_conf,
         "p_rotate": 0.0,  # probability to rotate image by +/- 90°
         "reseed": False,
@@ -134,7 +135,6 @@ class _MegaDepthSplit(torch.utils.data.Dataset):
         self.depths = {}
         self.poses = {}
         self.intrinsics = {}
-        self.valid = {}
 
         # load metadata
         self.info_dir = self.root / self.conf.info_dir
@@ -184,7 +184,9 @@ class _MegaDepthSplit(torch.utils.data.Dataset):
                     assert impath in self.images[scene], (impath, scene)
                     idx = np.where(self.images[scene] == impath)[0][0]
                     idxs.append(idx)
-                self.items.append((scene, idxs, 1.0))
+                self.items.append(
+                    (scene, idxs, np.ones((len(idxs), len(idxs)), dtype=np.float32))
+                )
         elif self.conf.views == 1:
             for scene in self.scenes:
                 if scene not in self.images:
@@ -270,7 +272,7 @@ class _MegaDepthSplit(torch.utils.data.Dataset):
         if num_neg is not None:
             neg_pairs = np.stack(np.where(mat <= 0.0), -1)
             neg_pairs = sample_n(neg_pairs, num_neg, seed)
-            pairs += [(scene, (ind[i], ind[j]), 0.0) for i, j in neg_pairs]
+            pairs += [(scene, (ind[i], ind[j]), np.zeros((2, 2))) for i, j in neg_pairs]
         self.items.extend(pairs)
 
     def sample_triplets(self, seed, scene, num_pos, num_neg):
@@ -329,7 +331,6 @@ class _MegaDepthSplit(torch.utils.data.Dataset):
             scene = np.random.choice(scenes).item()
             valid = self.images[scene] != None
             idx = np.random.choice(len(self.images[scene]), p=valid / valid.sum())
-            print(scene, idx)
         path = self.root / self.images[scene][idx]
 
         # read pose data
@@ -376,17 +377,21 @@ class _MegaDepthSplit(torch.utils.data.Dataset):
 
         data = self.preprocessor(img)
         if depth_map is not None:
-            data["depth"] = self.preprocessor(depth_map, interpolation="nearest")[
-                "image"
-            ][0]
-        K = gtr.scale_intrinsics(K, data["scales"])
-
+            data["depth"] = self.preprocessor.interpolate(
+                depth_map,
+                data["transform"],
+                data["image"].shape[-2:],
+                mode="nearest",
+            )[0]
+        # Scale intrinsics
         data = {
             "name": name,
             "scene": scene,
             "T_w2cam": reconstruction.Pose.from_4x4mat(T),
             "depth": depth_map,
-            "camera": reconstruction.Camera.from_calibration_matrix(K).float(),
+            "camera": reconstruction.Camera.from_calibration_matrix(K)
+            .float()
+            .compose_image_transform(data["transform"]),
             **data,
         }
 
@@ -403,7 +408,6 @@ class _MegaDepthSplit(torch.utils.data.Dataset):
                 elif k == -1:
                     kpts[:, 0] = y
                     kpts[:, 1] = h - x
-
                 else:
                     raise ValueError
                 features["keypoints"] = kpts
@@ -442,8 +446,9 @@ class _MegaDepthSplit(torch.utils.data.Dataset):
         if overlap is not None:
             data["overlap"] = overlap
 
-        if nviews == 1 and self.conf.get("squeeze_single_view", False):
-            data = {**data.pop("view0"), **data}
+        if nviews == 1 and self.conf.squeeze_single_view:
+            view_data = data.pop("view0")
+            data = {**data, **view_data}
         data["scene"] = scene
         data["idx"] = idx
         return data

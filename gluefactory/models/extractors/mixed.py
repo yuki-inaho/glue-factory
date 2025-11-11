@@ -27,6 +27,7 @@ class MixedExtractor(BaseModel):
     default_conf = {
         "detector": {"name": None},
         "descriptor": {"name": None},
+        "refiner": {"name": None},  # Always runs
         "interpolate_descriptors_from": None,  # field name, str or list
         "fusion_mlp": None,
         "allow_no_detect": False,
@@ -38,15 +39,10 @@ class MixedExtractor(BaseModel):
     def _init(self, conf):
         if conf.detector.name:
             self.detector = get_model(conf.detector.name)(to_ctr(conf.detector))
-        else:
-            self.required_data_keys += ["cache"]
-            self.required_cache_keys += ["keypoints"]
-
         if conf.descriptor.name:
             self.descriptor = get_model(conf.descriptor.name)(to_ctr(conf.descriptor))
-        else:
-            self.required_data_keys += ["cache"]
-            self.required_cache_keys += ["descriptors"]
+        if conf.refiner.name:
+            self.refiner = get_model(conf.refiner.name)(to_ctr(conf.refiner))
 
         self.interpolate_descriptors_from = conf.interpolate_descriptors_from
         if isinstance(self.interpolate_descriptors_from, str):
@@ -69,6 +65,9 @@ class MixedExtractor(BaseModel):
         if self.conf.descriptor.name:
             pred = {**pred, **self.descriptor({**pred, **data})}
 
+        if self.conf.refiner.name:
+            pred = {**pred, **self.refiner({**pred, **data})}
+
         if self.interpolate_descriptors_from:
             h, w = data["image"].shape[-2:]
             kpts = pred["keypoints"].clone()
@@ -86,6 +85,9 @@ class MixedExtractor(BaseModel):
         return pred
 
     def interpolate_descriptors(self, fmap, kpts):
+        if fmap.ndim == 3 and fmap.shape[-2] == kpts.shape[-2]:
+            # Already interpolated
+            return fmap
         return (
             F.grid_sample(
                 fmap,
@@ -103,7 +105,7 @@ class MixedExtractor(BaseModel):
         metrics = {}
         total = 0
 
-        for k in ["detector", "descriptor"]:
+        for k in ["detector", "descriptor", "refiner"]:
             apply = True
             if "apply_loss" in self.conf[k].keys():
                 apply = self.conf[k].apply_loss
@@ -121,7 +123,7 @@ class MixedExtractor(BaseModel):
         if self.conf.compile:
             return super().compile(*args, **kwargs)
 
-        for k in ["detector", "descriptor"]:
+        for k in ["detector", "descriptor", "refiner"]:
             if self.conf[k].name:
                 setattr(self, k, getattr(self, k).compile(*args, **kwargs))
         return self

@@ -31,6 +31,7 @@ class TwoViewPipeline(BaseModel):
         "ground_truth": {"name": None},
         "allow_no_extract": False,
         "run_gt_in_forward": False,
+        "from_triplet": False,
     }
     required_data_keys = ["view0", "view1"]
     strict_conf = False  # need to pass new confs to children models
@@ -69,35 +70,45 @@ class TwoViewPipeline(BaseModel):
             pred_i = {**pred_i, **self.extractor({**data_i, **pred_i})}
         return pred_i
 
+    def triplet_to_pairs(self, data):
+        # Convert triplet to three pairs (inplace because easier)
+        tv_datas = [misc.get_twoview(data, idx) for idx in ["0to1", "1to2", "0to2"]]
+        data.clear()
+        data.update(misc.concat_tree(tv_datas))
+        return data
+
     def _forward(self, data):
+        num_views = len([k for k in data.keys() if k.startswith("view")])
         if self.conf.get("extract_parallel", False) and self.training:
             bs = data["view0"]["image"].shape[0]
-            data_01 = misc.concat_tree([data["view0"], data["view1"]])
-            pred_01 = self.extract_view(data_01)
-            pred0 = misc.flat_map(pred_01, lambda _, v: v[:bs], unflatten=True)
-            pred1 = misc.flat_map(pred_01, lambda _, v: v[bs:], unflatten=True)
+            vdata = misc.concat_tree(misc.iterelements(data, pattern="view"))
+            vpred = self.extract_view(vdata)
+            preds = misc.split_tree(vpred, bs, num_views)
         else:
-            pred0 = self.extract_view(data["view0"])
-            pred1 = self.extract_view(data["view1"])
+            preds = [self.extract_view(data[f"view{i}"]) for i in range(num_views)]
 
-        pred = {
-            **{k + "0": v for k, v in pred0.items()},
-            **{k + "1": v for k, v in pred1.items()},
-        }
+        pred = {**{f"{k}{i}": v for i, p in enumerate(preds) for k, v in p.items()}}
 
+        if num_views > 2:
+            assert num_views == 3, "Only support triplets for now"
+            # Convert triplet to three pairs (inplace because easier)
+            self.triplet_to_pairs(data)
+            self.triplet_to_pairs(pred)
+
+        if self.conf.ground_truth.name and self.conf.run_gt_in_forward:
+            gt_pred = self.ground_truth({**data, **pred})
+            pred.update({f"gt_{k}": v for k, v in gt_pred.items()})
         if self.conf.matcher.name:
             pred = {**pred, **self.matcher({**data, **pred})}
         if self.conf.filter.name:
             pred = {**pred, **self.filter({**data, **pred})}
         if self.conf.solver.name:
             pred = {**pred, **self.solver({**data, **pred})}
-
-        if self.conf.ground_truth.name and self.conf.run_gt_in_forward:
-            gt_pred = self.ground_truth({**data, **pred})
-            pred.update({f"gt_{k}": v for k, v in gt_pred.items()})
         return pred
 
     def loss(self, pred, data):
+        if "view2" in data:
+            self.triplet_to_pairs(data)
         losses = {}
         metrics = {}
         total = 0
@@ -126,6 +137,8 @@ class TwoViewPipeline(BaseModel):
 
     def visualize(self, pred, data, **kwargs):
         """Visualize the matches."""
+        if "view2" in data:
+            self.triplet_to_pairs(data)
         figures = {}
         for k in self.components:
             if self.conf[k].name and self.conf[k].get("visualize", True):
@@ -135,6 +148,8 @@ class TwoViewPipeline(BaseModel):
     def pr_metrics(self, pred, data):
         """Compute precision-recall metrics."""
         pr_metrics = {}
+        if "view2" in data:
+            self.triplet_to_pairs(data)
         for k in self.components:
             if self.conf[k].name and hasattr(getattr(self, k), "pr_metrics"):
                 pr_metrics.update(getattr(self, k).pr_metrics(pred, data))

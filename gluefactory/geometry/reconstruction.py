@@ -6,6 +6,7 @@ Based on PyTorch tensors: differentiable, batched, with GPU support.
 import dataclasses
 import logging
 import math
+from copy import deepcopy
 from pathlib import Path
 from typing import (
     Any,
@@ -21,6 +22,7 @@ from typing import (
 
 import h5py
 import numpy as np
+import plotly.graph_objects as go
 
 Self: TypeAlias = Any
 
@@ -37,15 +39,16 @@ import torch
 import torch.nn.functional as tnf
 
 from ..utils import misc, tensor, tools
+from ..visualization import viz3d
 from . import transforms as gtr
 
 logger = logging.getLogger(__name__)
 
 
 class Pose(tensor.TensorWrapper):
-    def __init__(self, data: torch.Tensor):
-        assert data.shape[-1] == 12, data.shape
-        super().__init__(data)
+    def __init__(self, data_: torch.Tensor):
+        self.data_ = data_
+        super().__post_init__()
 
     @classmethod
     def identity(cls, device=None, dtype=None):
@@ -100,7 +103,16 @@ class Pose(tensor.TensorWrapper):
             T: transformation matrix with shape (..., 4, 4).
         """
         assert T.shape[-2:] == (4, 4)
-        R, t = T[..., :3, :3], T[..., :3, 3]
+        return cls.from_projection_matrix(T[..., :3, :4])
+
+    @classmethod
+    def from_projection_matrix(cls, P: torch.Tensor):
+        """Pose from a projection matrix.
+        Args:
+            P: projection matrix with shape (..., 3, 4).
+        """
+        assert P.shape[-2:] == (3, 4)
+        R, t = P[..., :3, :3], P[..., :3, 3]
         return cls.from_Rt(R, t)
 
     @classmethod
@@ -121,13 +133,13 @@ class Pose(tensor.TensorWrapper):
     @property
     def R(self) -> torch.Tensor:
         """Underlying rotation matrix with shape (..., 3, 3)."""
-        rvec = self._data[..., :9]
+        rvec = self.data_[..., :9]
         return rvec.reshape(rvec.shape[:-1] + (3, 3))
 
     @property
     def t(self) -> torch.Tensor:
         """Underlying translation vector with shape (..., 3)."""
-        return self._data[..., -3:]
+        return self.data_[..., -3:]
 
     @property
     def P(self) -> torch.Tensor:
@@ -250,7 +262,7 @@ class Pose(tensor.TensorWrapper):
 
     def manifold(self, delta: torch.Tensor | None = None) -> torch.Tensor:
         if delta is None:
-            delta = torch.zeros_like(self._data[..., :6])
+            delta = torch.zeros_like(self.data_[..., :6])
         return delta
 
     def update(self, delta: torch.Tensor | Self, inplace: bool = False) -> "Pose":
@@ -260,7 +272,7 @@ class Pose(tensor.TensorWrapper):
         # Inverted!
         updated_pose = self @ delta
         if inplace:
-            self._data = updated_pose._data
+            self.data_ = updated_pose.data_
             return self
         else:
             return updated_pose
@@ -269,12 +281,16 @@ class Pose(tensor.TensorWrapper):
         return f"Pose: {self.shape} {self.dtype} {self.device}"
 
 
-class Camera(tensor.TensorWrapper):
-    eps = 1e-4
+class Camera(tensor.TensorWrapper, tensor_only=False, nocast=True):
+    eps: float = 1e-4
+    share_df: bool = True  # share fx, fy updates (global): has no impact outside BA
 
-    def __init__(self, data: torch.Tensor):
-        assert data.shape[-1] in {6, 8, 10}
-        super().__init__(data)
+    def __init__(self, data_: torch.Tensor, share_df: bool = True, eps: float = 1e-4):
+        assert data_.shape[-1] in {6, 8, 10}
+        self.data_ = data_
+        self.share_df = share_df
+        self.eps = eps
+        super().__post_init__()
 
     @classmethod
     def from_colmap(cls, camera: Union[Dict, NamedTuple]):
@@ -297,8 +313,8 @@ class Camera(tensor.TensorWrapper):
         else:
             raise NotImplementedError(model)
 
-        data = np.r_[camera["width"], camera["height"], fx, fy, cx, cy, params]
-        return cls(data)
+        data_ = np.r_[camera["width"], camera["height"], fx, fy, cx, cy, params]
+        return cls(torch.from_numpy(data_))
 
     @classmethod
     def from_pycolmap(cls, camera):
@@ -313,26 +329,38 @@ class Camera(tensor.TensorWrapper):
         )
 
     @classmethod
-    @tensor.autocast
-    def from_calibration_matrix(cls, K: torch.Tensor):
+    def data_from_K(cls, K: torch.Tensor):
         cx, cy = K[..., 0, 2], K[..., 1, 2]
         fx, fy = K[..., 0, 0], K[..., 1, 1]
         data = torch.stack([2 * cx, 2 * cy, fx, fy, cx, cy], -1)
+        return data
+
+    @classmethod
+    @tensor.autocast
+    def from_calibration_matrix(cls, K: torch.Tensor):
+        return cls(Camera.data_from_K(K))
+
+    @classmethod
+    def from_image(cls, img: torch.Tensor):
+        h, w = img.shape[-2:]
+        cx, cy = w / 2, h / 2
+        fx = fy = 0.5 * max(w, h)
+        data = torch.tensor([w, h, fx, fy, cx, cy], device=img.device, dtype=img.dtype)
         return cls(data)
 
     @tensor.autocast
     def calibration_matrix(self):
         K = torch.zeros(
-            *self._data.shape[:-1],
+            *self.data_.shape[:-1],
             3,
             3,
-            device=self._data.device,
-            dtype=self._data.dtype,
+            device=self.data_.device,
+            dtype=self.data_.dtype,
         )
-        K[..., 0, 2] = self._data[..., 4]
-        K[..., 1, 2] = self._data[..., 5]
-        K[..., 0, 0] = self._data[..., 2]
-        K[..., 1, 1] = self._data[..., 3]
+        K[..., 0, 2] = self.data_[..., 4]
+        K[..., 1, 2] = self.data_[..., 5]
+        K[..., 0, 0] = self.data_[..., 2]
+        K[..., 1, 1] = self.data_[..., 3]
         K[..., 2, 2] = 1.0
         return K
 
@@ -343,12 +371,12 @@ class Camera(tensor.TensorWrapper):
     @property
     def size(self) -> torch.Tensor:
         """Size (width height) of the images, with shape (..., 2)."""
-        return self._data[..., :2]
+        return self.data_[..., :2]
 
     @property
     def f(self) -> torch.Tensor:
         """Focal lengths (fx, fy) with shape (..., 2)."""
-        return self._data[..., 2:4]
+        return self.data_[..., 2:4]
 
     def fov(self) -> torch.Tensor:
         """Vertical field of view in radians."""
@@ -357,12 +385,12 @@ class Camera(tensor.TensorWrapper):
     @property
     def c(self) -> torch.Tensor:
         """Principal points (cx, cy) with shape (..., 2)."""
-        return self._data[..., 4:6]
+        return self.data_[..., 4:6]
 
     @property
     def dist(self) -> torch.Tensor:
         """Distortion parameters, with shape (..., {0, 2, 4})."""
-        return self._data[..., 6:]
+        return self.data_[..., 6:]
 
     @tensor.autocast
     def scale(self, scales: torch.Tensor):
@@ -371,17 +399,36 @@ class Camera(tensor.TensorWrapper):
         data = torch.cat([self.size * s, self.f * s, self.c * s, self.dist], -1)
         return self.__class__(data)
 
+    @tensor.autocast
+    def compose_image_transform(
+        self, new_t_img: torch.Tensor, inplace: bool = False
+    ) -> "Camera":
+        """Update the camera parameters after an image space transformation.
+        Args:
+            new_t_img: 3x3 image transformation matrix.
+            inplace: whether to update the current camera or return a new one.
+        """
+        K = self.calibration_matrix()
+        new_K = new_t_img.to(K) @ K
+        newdata_ = Camera.data_from_K(new_K)
+
+        alldata_ = torch.cat([newdata_, self.dist], -1)
+        if inplace:
+            self.data_ = alldata_
+            return self
+        return Camera(alldata_)
+
     def empty_image(self, rgb: bool = False) -> torch.Tensor:  # H X W or 3 X H X W
         """Create an empty image with the camera size."""
-        assert self._data.ndim == 1, "Only for single cameras."
+        assert self.data_.ndim == 1, "Only for single cameras."
         w, h = self.size.long().tolist()
         dims = (3, h, w) if rgb else (h, w)
-        return torch.zeros(dims, dtype=self._data.dtype, device=self._data.device)
+        return torch.zeros(dims, dtype=self.data_.dtype, device=self.data_.device)
 
     def crop(self, left_top: Tuple[float], size: Tuple[int]):
         """Update the camera parameters after cropping an image."""
-        left_top = self._data.new_tensor(left_top)
-        size = self._data.new_tensor(size)
+        left_top = self.data_.new_tensor(left_top)
+        size = self.data_.new_tensor(size)
         data = torch.cat([size, self.f, self.c - left_top, self.dist], -1)
         return self.__class__(data)
 
@@ -467,7 +514,7 @@ class Camera(tensor.TensorWrapper):
 
     def image2cam(self, p2d: torch.Tensor, homogeneous: bool = True) -> torch.Tensor:
         """Convert 2D pixel corrdinates to 3D points with z=1"""
-        assert self._data.shape
+        assert self.data_.shape
         p2d = self.normalize(p2d)
         # iterative undistortion
         if homogeneous:
@@ -475,26 +522,38 @@ class Camera(tensor.TensorWrapper):
         else:
             return p2d
 
+    @property
+    def params(self) -> torch.Tensor:
+        if self.share_df:
+            return self.data_[..., 2:3]
+        else:
+            return self.data_[..., 2:4]
+
+    @params.setter
+    def params(self, value: torch.Tensor) -> None:
+        # Broadcast in the case of share_df
+        self.data_[..., 2:4] = value
+
     def manifold(self, delta: torch.Tensor | None = None) -> torch.Tensor:
         if delta is None:
-            delta = torch.zeros_like(self._data[..., 2:4])
+            return torch.zeros_like(self.params)
         return delta
 
     def update(self, delta: torch.Tensor | Self, inplace=False) -> "Camera":
         delta = delta.to(self.dtype).to(self.device)
         if isinstance(delta, self.__class__):
-            delta = delta._data[..., 2:4]
+            delta = delta.params
 
         if inplace:
-            self._data[..., 2:4] += delta
+            self.params += delta
             return self
         else:
             cam_copy = self.clone()
-            cam_copy._data[..., 2:4] += delta
+            cam_copy.params += delta
             return cam_copy
 
     def to_cameradict(self, camera_model: Optional[str] = None) -> List[Dict]:
-        data = self._data.clone()
+        data = self.data_.clone()
         if data.dim() == 1:
             data = data.unsqueeze(0)
         assert data.dim() == 2
@@ -515,7 +574,7 @@ class Camera(tensor.TensorWrapper):
                     "params": params,
                 }
             )
-        return cameras if self._data.dim() == 2 else cameras[0]
+        return cameras if self.data_.dim() == 2 else cameras[0]
 
     def __repr__(self):
         return f"Camera {self.shape} {self.dtype} {self.device}"
@@ -579,13 +638,7 @@ class Reconstruction:
         return self.to("cpu")
 
     def clone(self) -> "Reconstruction":
-        return Reconstruction(
-            w_t_c=self.w_t_c.clone(),
-            cameras=self.cameras.clone(),
-            camera_idx=self.camera_idx.clone(),
-            image_names=self.image_names.copy(),
-            registered=self.registered.clone(),
-        )
+        return deepcopy(self)
 
     def __repr__(self) -> str:
         return (
@@ -677,16 +730,15 @@ class Reconstruction:
         abs_error = (cameras_gt.f - cameras.f).abs()
         rel_error = abs_error / cameras_gt.f
         fov_error = (cameras_gt.fov() - cameras.fov()).abs().mean(-1) * 180.0 / torch.pi
+        do_compare = self.registered[image_ids].bool().to(abs_error.device)
         errors = {
-            "f_abs": torch.where(
-                self.registered[image_ids].bool(), abs_error.max(-1).values, 5000
-            ),
+            "f_abs": torch.where(do_compare, abs_error.max(-1).values, 5000),
             "f_rel": torch.where(
-                self.registered[image_ids].bool(),
+                do_compare,
                 (rel_error.max(-1).values * 100),
                 100.0,
             ),
-            "fov": torch.where(self.registered[image_ids].bool(), fov_error, 180.0),
+            "fov": torch.where(do_compare, fov_error, 180.0),
         }
 
         metrics = {}
@@ -721,14 +773,14 @@ class Reconstruction:
 
     def to_h5(self, output_file: Path):
         with h5py.File(str(output_file), "w") as h5f:
-            h5f.create_dataset("image_names", data=self.image_names)
-            h5f.create_dataset(
-                "cameras", data=self.cameras._data.detach().cpu().numpy()
+            h5f.createdata_set("image_names", data=self.image_names)
+            h5f.createdata_set(
+                "cameras", data=self.cameras.data_.detach().cpu().numpy()
             )
             for image_id, image_name in enumerate(self.image_names):
                 grp = h5f.create_group(image_name)
-                grp.create_dataset(
-                    "w_t_c", data=self.w_t_c[image_id]._data.detach().cpu().numpy()
+                grp.createdata_set(
+                    "w_t_c", data=self.w_t_c[image_id].data_.detach().cpu().numpy()
                 )
                 grp.attrs["camera_idx"] = (
                     self.camera_idx[image_id].detach().cpu().numpy()
@@ -756,3 +808,53 @@ class Reconstruction:
             registered=torch.Tensor(registered).long(),
             image_names=image_names,
         )
+
+    def plot3d(
+        self,
+        fig: go.Figure | None = None,
+        image_ids: Sequence[int] | None = None,
+        height: int = 600,
+        projection: str = "orthographic",
+        cs: int = 10.0,
+    ) -> go.Figure:
+        """Plot the reconstruction in a matplotlib 3D axis."""
+        if fig is None:
+            fig = viz3d.init_figure(height=height, projection=projection)
+        if image_ids is None:
+            image_ids = self.image_ids
+        viz3d.plot_cameras(
+            fig,
+            self.w_t_c[image_ids],
+            self.get_camera(image_ids),
+            name=self.image_names,
+            scale=cs,
+            legendgroup="cameras",
+        )
+        return fig
+
+
+if __name__ == "__main__":
+
+    # import torch._C._functorch as cft  # type: ignore
+
+    # def fn0(x):
+    #     print("HIIIIII", x, type(x))
+
+    #     print(cft.is_batchedtensor(x))
+    #     print(cft.is_legacy_batchedtensor(x))
+    #     # x.transform
+    #     return x
+
+    # print(torch.vmap(fn0)(Pose(torch.randn(5, 12))))
+    print(Pose(torch.rand(5, 12)))
+
+    print(isinstance(Pose(torch.rand(5, 12)), tensor.TensorWrapper))
+
+    def fn(x, y):
+        p = Pose(x)
+        print(p.R.shape, p.shape, p.device)
+        return p, p.transform(y)
+
+    print(torch.vmap(fn)(torch.randn(2, 12), torch.rand(2, 3, 3)))
+
+    print(Camera(torch.rand(5, 6)))

@@ -3,6 +3,8 @@ import string
 import h5py
 import torch
 
+from gluefactory.geometry import transforms as gtr
+
 from .. import settings
 from ..datasets import base_dataset
 from ..utils import misc
@@ -67,6 +69,7 @@ class CacheLoader(BaseModel):
         "padding_fn": None,
         "padding_length": None,  # required for batching!
         "numeric_type": "float32",  # [None, "float16", "float32", "float64"]
+        "check_valid": True,  # check if points are inside the image after scaling
     }
 
     required_data_keys = ["name"]  # we need an identifier
@@ -124,12 +127,26 @@ class CacheLoader(BaseModel):
                 for pattern in self.conf.scale:
                     if k.startswith(pattern):
                         view_idx = k.replace(pattern, "")
-                        scales = (
-                            data["scales"]
+                        norm_t_img = (
+                            data["transform"]
                             if len(view_idx) == 0
-                            else data[f"view{view_idx}"]["scales"]
+                            else data[f"view{view_idx}"]["transform"]
                         )
-                        pred[k] = pred[k] * scales[i]
+                        pred[k] = gtr.transform_points(
+                            (torch.as_tensor(norm_t_img[i]).to(pred[k].dtype)), pred[k]
+                        )
+                        if self.conf.check_valid:
+                            image_size = (
+                                data["image_size"]
+                                if len(view_idx) == 0
+                                else data[f"view{view_idx}"]["image_size"]
+                            )
+                            valid = gtr.is_inside(
+                                pred[k], torch.as_tensor(image_size[i])
+                            )
+                            for kk, vv in pred.items():
+                                if vv.shape[0] == valid.shape[0]:
+                                    pred[kk] = vv[valid]
             # use this function to fix number of keypoints etc.
             if self.padding_fn is not None:
                 pred = self.padding_fn(pred, self.conf.padding_length)

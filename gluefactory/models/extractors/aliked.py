@@ -124,9 +124,9 @@ class DKD(nn.Module):
         nms_scores[:, :, :, : self.radius] = 0
         if image_size is not None:
             for i in range(scores_map.shape[0]):
-                w, h = image_size[i].long()
-                nms_scores[i, :, h.item() - self.radius :, :] = 0
-                nms_scores[i, :, :, w.item() - self.radius :] = 0
+                wr, hr = image_size[i].long()
+                nms_scores[i, :, hr.item() - self.radius :, :] = 0
+                nms_scores[i, :, :, wr.item() - self.radius :] = 0
         else:
             nms_scores[:, :, -self.radius :, :] = 0
             nms_scores[:, :, :, -self.radius :] = 0
@@ -596,6 +596,7 @@ class ALIKED(BaseModel):
         "force_num_keypoints": False,
         "pretrained": True,
         "nms_radius": 2,
+        "dense_outputs": False,
     }
 
     checkpoint_url = "https://github.com/Shiaoming/ALIKED/raw/main/models/{}.pth"
@@ -776,13 +777,16 @@ class ALIKED(BaseModel):
         wh = torch.tensor([w - 1, h - 1], device=image.device)
         # no padding required,
         # we can set detection_threshold=-1 and conf.max_num_keypoints
-        return {
+        pred = {
             "keypoints": wh * (torch.stack(keypoints) + 1) / 2.0,  # B N 2
             "descriptors": torch.stack(descriptors),  # B N D
             "keypoint_scores": torch.stack(kptscores),  # B N
             "score_dispersity": torch.stack(scoredispersitys),
             "score_map": score_map,  # Bx1xHxW
         }
+        if self.conf.dense_outputs:
+            pred["image_features"] = feature_map  # BxDxHxW
+        return pred
 
     def loss(self, pred, data):
         raise NotImplementedError

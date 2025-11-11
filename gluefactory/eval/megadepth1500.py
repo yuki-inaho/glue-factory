@@ -24,7 +24,7 @@ class MegaDepth1500Pipeline(eval_pipeline.RelativePosePipeline):
             "preprocessing": {
                 "side": "long",
             },
-            "num_workers": 4,
+            "num_workers": None,
         },
         "model": {
             "ground_truth": {
@@ -33,6 +33,9 @@ class MegaDepth1500Pipeline(eval_pipeline.RelativePosePipeline):
         },
         "eval": eval_pipeline.RelativePosePipeline.default_conf["eval"],
     }
+
+    default_x: str = "gt_match_precision@3px"
+    default_y: str = "gt_match_recall@3px"
 
     def _init(self, conf):
         if not (settings.DATA_PATH / "megadepth1500").exists():

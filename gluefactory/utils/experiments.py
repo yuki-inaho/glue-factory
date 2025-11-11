@@ -12,11 +12,13 @@ from pathlib import Path
 from typing import Any, Optional
 
 import hydra
+import omegaconf
 import pkg_resources
 import torch
 from omegaconf import OmegaConf
 
 from .. import models, settings
+from . import misc
 
 logger = logging.getLogger(__name__)
 
@@ -49,10 +51,28 @@ def parse_config_path(
     return Path(path)
 
 
+def load_sweep_config(
+    sweep_confs: omegaconf.ListConfig,
+    sweep_idx: int,
+) -> omegaconf.DictConfig:
+    conf = {}
+    for sweep_conf in sweep_confs:
+        for k, v in sweep_conf.items():
+            if len(v) == 1:
+                conf[k] = v[0]
+            else:
+                conf[k] = v[sweep_idx]
+    logger.info(f"Sweep config: {conf}")
+    conf = misc.unflatten_dict(conf)
+    return OmegaConf.create(conf)
+
+
 def compose_config(
     name_or_path: Optional[str],
     default_config_dir: str = "configs/",
     overrides: Optional[list[str]] = None,
+    sweep_idx: int | None = None,
+    resolve: bool = True,
 ) -> tuple[Path, OmegaConf]:
 
     conf_path = parse_config_path(name_or_path, default_config_dir)
@@ -60,8 +80,17 @@ def compose_config(
 
     # pathlib does not support walk_up with python < 3.12, so use os.path.relpath
     rel_conf_dir = Path(os.path.relpath(conf_path.parent, Path(__file__).parent))
-    hydra.initialize(version_base=None, config_path=str(rel_conf_dir))
-    custom_conf = hydra.compose(config_name=conf_path.stem, overrides=overrides)
+    with hydra.initialize(version_base=None, config_path=str(rel_conf_dir)):
+        custom_conf = hydra.compose(config_name=conf_path.stem, overrides=overrides)
+
+    if sweep_idx is not None:
+        logger.info(f"Loading sweep {sweep_idx}.")
+        sweep_conf = load_sweep_config(custom_conf.get("sweep", []), sweep_idx)
+        OmegaConf.set_struct(custom_conf, False)
+        custom_conf = OmegaConf.merge(custom_conf, sweep_conf)
+        del custom_conf["sweep"]
+    if resolve:
+        OmegaConf.resolve(custom_conf)
     return conf_path, custom_conf
 
 
@@ -209,7 +238,10 @@ def save_experiment(
 
 # Adaptation of torch.profiler.tensorboard_trace_handler
 def tensorboard_trace_handler(
-    dir_name: str, worker_name: Optional[str] = None, use_gzip: bool = False
+    dir_name: str,
+    worker_name: Optional[str] = None,
+    use_gzip: bool = False,
+    epoch: int | None = None,
 ):
     """
     Outputs tracing files to directory of ``dir_name``, then that directory can be
@@ -242,6 +274,8 @@ def tensorboard_trace_handler(
                 raise RuntimeError("Can't create directory: " + dir_name) from e
         if not worker_name:
             worker_name = f"{socket.gethostname()}_{os.getpid()}"
+        if epoch is not None:
+            worker_name += f"_epoch{epoch}"
         # Use nanosecond here to avoid naming clash when exporting the trace
         file_name = f"{worker_name}.{time.time_ns()}.pt.trace.json"
         file_path = os.path.join(dir_name, file_name)
@@ -259,3 +293,12 @@ def tensorboard_trace_handler(
             os.remove(file_path)
 
     return handler_fn
+
+
+def get_ablation_dir(output_dir: Path, mkdir: bool = False) -> Path:
+    subdirs = [int(p.stem) for p in output_dir.glob("*/") if p.stem.isdigit()]
+    ablate_id = max(subdirs, default=-1) + 1
+    output_dir = output_dir / str(ablate_id)
+    if mkdir:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir

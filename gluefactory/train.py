@@ -72,7 +72,9 @@ def compose_cli_config(output_dir: Path, args) -> DictConfig:
     conf = OmegaConf.from_cli(args.dotlist)
     OmegaConf.save(conf, str(output_dir / "cli_config.yaml"))
     if args.conf:
-        conf_path, raw_conf = experiments.compose_config(args.conf)
+        conf_path, raw_conf = experiments.compose_config(
+            args.conf, sweep_idx=args.sweep_idx
+        )
         OmegaConf.set_struct(raw_conf, args.strict)
         conf = OmegaConf.merge(raw_conf, conf)
         # Copy a more readable config file to the output dir
@@ -166,6 +168,9 @@ def parse_args():
         "--cs",
         type=str,
         default="zip",
+    )
+    parser.add_argument(
+        "--sweep_idx", "-sid", type=int, default=None, help="Index of the sweep run"
     )
     parser.add_argument("--quiet", action="store_true", help="Mute some logging")
     parser.add_argument(

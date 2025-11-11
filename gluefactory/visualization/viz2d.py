@@ -164,7 +164,7 @@ def plot_image_grid(
         return axs
 
 
-def plot_keypoints(kpts, colors="lime", ps=4, axes=None, a=1.0):
+def plot_keypoints(kpts, colors="lime", ps=4, axes=None, a=1.0, **kwargs):
     """Plot keypoints for existing images.
     Args:
         kpts: list of ndarrays of size (N, 2).
@@ -180,7 +180,7 @@ def plot_keypoints(kpts, colors="lime", ps=4, axes=None, a=1.0):
     for ax, k, c, alpha in zip(axes, kpts, colors, a):
         if isinstance(k, torch.Tensor):
             k = k.detach().cpu().numpy()
-        ax.scatter(k[:, 0], k[:, 1], c=c, s=ps, linewidths=0, alpha=alpha)
+        ax.scatter(k[:, 0], k[:, 1], c=c, s=ps, linewidths=0, alpha=alpha, **kwargs)
 
 
 def plot_matches(kpts0, kpts1, color=None, lw=1.5, ps=4, a=1.0, labels=None, axes=None):

@@ -5,6 +5,7 @@ Author: Philipp Lindenberger
 """
 
 import collections
+import os
 import signal
 from copy import deepcopy
 from pathlib import Path
@@ -50,6 +51,7 @@ def compose_loss(loss_dict: LossMetrics, compose_str: str) -> torch.Tensor:
     return loss
 
 
+@torch.compiler.set_stance("force_eager")
 @torch.no_grad()
 def run_evaluation(
     model: BaseModel | torch.nn.parallel.DistributedDataParallel,
@@ -62,11 +64,8 @@ def run_evaluation(
     compose_loss_str: str | None = None,
 ) -> tuple[Any, ...]:
     model.eval()
-    model = (
-        model.module
-        if isinstance(model, torch.nn.parallel.DistributedDataParallel)
-        else model
-    )  # Get the original model
+    is_ddp = isinstance(model, torch.nn.parallel.DistributedDataParallel)
+    model = model.module if is_ddp else model  # Get the original model
     results = {}
     pr_metrics = collections.defaultdict(tools.PRMetric)
     figures = []
@@ -75,22 +74,32 @@ def run_evaluation(
     )
     max_iters = max_iters or len(loader)
     max_iters = min(max_iters, len(loader))
-    for i, data in enumerate(
-        tqdm(loader, desc="Evaluation", ascii=True, disable=not pbar)
-    ):
+    eval_iter = iter(loader)
+    for i in tqdm(range(len(loader)), desc="Evaluation", ascii=True, disable=not pbar):
         if i >= max_iters:
             break
+        data = next(eval_iter)
         data = misc.batch_to_device(data, device, non_blocking=True)
         with torch.no_grad():
             pred = model(data)
-            losses, metrics = model.loss(pred, data)
+            losses, metrics = model.loss_metrics(pred, data)
+            pr_metrics_i = model.pr_metrics(pred, data)
+            losses, metrics, pr_metrics_i = [
+                misc.batch_to_device(x, "cpu", non_blocking=False)
+                for x in (losses, metrics, pr_metrics_i)
+            ]
+            if is_ddp:
+                # Gather all losses and metrics
+                losses = misc.tree_all_gather(losses)
+                metrics = misc.tree_all_gather(metrics)
+                pr_metrics_i = misc.tree_all_gather(pr_metrics_i)
             if compose_loss_str is not None:
                 losses["total"] = compose_loss(losses, compose_loss_str)
             if i in plot_ids:
                 figures.append(model.visualize(pred, data))
             # add PR curves
-            for k, labels_preds in model.pr_metrics(pred, data).items():
-                pr_metrics[k].update(*labels_preds)
+            for k, (labels, preds) in pr_metrics_i.items():
+                pr_metrics[k].update(labels, preds)
         del pred, data
         numbers = {**metrics, **{"loss/" + k: v for k, v in losses.items()}}
         for k, v in numbers.items():
@@ -135,8 +144,10 @@ class Trainer:
             "factor": 1.0,
             "options": {},  # add lr_scheduler arguments here
         },
-        "lr_scaling": [(100, ["dampingnet.const"])],
+        "lr_scaling": {},  # learning rate scaling for parameter name patterns
         "eval_every_epoch": None,  # interval for evaluation on the validation set
+        "train_split": "train",  # split to use for training
+        "eval_split": "val",  # split to use for evaluation
         "benchmark_every_epoch": 1,  # interval for evaluation on the test benchmarks
         "save_every_iter": 5000,  # interval for saving the current checkpoint
         "log_every_iter": 200,  # interval for logging the loss to the console
@@ -156,13 +167,19 @@ class Trainer:
         "num_devices": 0,  # 0 means sequential.
         "compile": None,  # Compilation mode for the model. [None, default, ...]
         "profile": None,  # Profile the training with PyTorch profiler (# prof steps)
+        "profile_every_epoch": None,  # Profile every N epochs, None means only first
         "record_memory": None,  # Record memory usage during training (# record steps)
         "log_it": False,  # Log tensorboard on iteration (default is num_samples)
+        "print_arch": False,  # Print the model architecture
+        "stdout_metrics": [
+            "loss/total"
+        ],  # List of metrics to print to stdout (None=all)
         "detect_anomaly": False,  # Enable anomaly detection
         "matmul_precision": None,  # Set torch.matmul precision [None, highest, high, medium, low]
         "gradient_accumulation_steps": 1,  # Accumulate gradients over N steps
         "ddp_find_unused_parameters": False,  # DDP find_unused_parameters
         "overfit": False,  # Overfit a single batch
+        "stop_immediately": False,  # Stop training immediately on SIGINT
         "run_benchmarks": (),
         "writer": "tensorboard",  # options: [tensorboard, wandb]
         "project_name": __module_name__,  # wandb project name
@@ -202,8 +219,9 @@ class Trainer:
             )
 
         # Initialize model params and conf
-        self.all_params = self.model.parameters()
         self.model_conf = self.model.conf
+        if self.conf.print_arch:
+            self.info("Model architecture:\n%s", str(self.model))
 
         # Setup scaler and dtype
         self.use_mp = self.setup_dtype_scaler(conf.mixed_precision)
@@ -400,7 +418,7 @@ class Trainer:
     def setup_sigint_handler(self):
         def sigint_handler(signal, frame):
             logger.info("Caught keyboard interrupt signal, will terminate")
-            if self.stop:
+            if self.stop or self.conf.stop_immediately:
                 raise KeyboardInterrupt
             self.stop = True
 
@@ -434,10 +452,14 @@ class Trainer:
                 torch.profiler.ProfilerActivity.CUDA,
             ],
             schedule=torch.profiler.schedule(
-                wait=5, warmup=1, active=True, repeat=1, skip_first=10
+                wait=5,
+                warmup=1,
+                active=self.conf.profile,
+                repeat=1,
+                skip_first=10,
             ),
             on_trace_ready=experiments.tensorboard_trace_handler(
-                str(output_dir), use_gzip=not store_raw_trace
+                str(output_dir), use_gzip=not store_raw_trace, epoch=self.epoch
             ),
             record_shapes=False,
             profile_memory=False,
@@ -514,7 +536,7 @@ class Trainer:
             torch.cuda.memory._record_memory_history(enabled="all")
         elif it == offset + self.conf.record_memory:
             # Record memory usage every self.conf.record_memory iterations
-            snapshot_path = output_dir / f"memory_snapshot.json"
+            snapshot_path = output_dir / f"memory_snapshot_epoch{self.epoch}.json"
             torch.cuda.memory._dump_snapshot(snapshot_path)
 
     def log_train(
@@ -525,9 +547,8 @@ class Trainer:
         extra_str: str = "",
     ):
         tot_n_samples = self.current_it
-        all_params = self.all_params
+        all_params = self.model.parameters()
         writer.add_scalar("l2/param_norm", misc.param_norm(all_params), tot_n_samples)
-        writer.add_scalar("l2/grad_norm", misc.grad_norm(all_params), tot_n_samples)
         loss_metrics = {k: v.compute() for k, v in train_loss_metrics.items()}
         if self.conf.stdout_metrics is None:
             str_loss_metrics = [f"{k} {v:.3E}" for k, v in loss_metrics.items()]
@@ -614,12 +635,57 @@ class Trainer:
             f"[Used {memory_used:.1f}/{memory_total:.1f} GB | {steps_per_sec:.1f} it/s]"
         )
 
+    def log_data(
+        self, writer: Writer, it: int, loader: torch.utils.data.DataLoader, split: str
+    ) -> str:
+
+        tot_n_samples = self.current_it
+
+        name = f"{split}_data"
+
+        if hasattr(loader.dataset, "stats"):
+            data_metrics, data_figures = loader.dataset.stats()
+            tools.write_dict_summaries(writer, name, data_metrics, tot_n_samples)
+            tools.write_image_summaries(writer, name, data_figures, tot_n_samples)
+
+        writer.add_scalar(f"{name}/num_batches", len(loader), tot_n_samples)
+        writer.add_scalar(
+            f"{name}/batch_size", loader.batch_size * self.num_gpus, tot_n_samples
+        )
+        writer.add_scalar(
+            f"{name}/num_samples",
+            len(loader) * loader.batch_size * self.num_gpus,
+            tot_n_samples,
+        )
+
+    def log_data_stats(
+        self, writer: Writer, it: int, scene_num_samples: dict[str, int], split: str
+    ) -> str:
+        tot_n_samples = self.current_it
+
+        if len(scene_num_samples) == 0:
+            return
+
+        writer.add_scalar(
+            f"{split}_data/num_scenes", len(scene_num_samples), tot_n_samples
+        )
+        writer.add_scalar(
+            f"{split}_data/avg_frames_per_scene",
+            np.mean(list(scene_num_samples.values())),
+            tot_n_samples,
+        )
+        writer.add_scalar(
+            f"{split}_data/min_frames_per_scene",
+            np.min(list(scene_num_samples.values())),
+            tot_n_samples,
+        )
+
     # ------------------------------------------------------------------------
     # Step functions (train, eval, visualize, ...)
     # ------------------------------------------------------------------------
 
     def train_step(
-        self, data: Batch, do_update: bool = True
+        self, data: Batch, do_update: bool = True, log_grad_norm: bool = False
     ) -> tuple[Predictions, LossMetrics]:
         with torch.autocast(
             device_type="cuda" if torch.cuda.is_available() else "cpu",
@@ -630,7 +696,7 @@ class Trainer:
             self.step_timer.measure("to_device")
             pred = self.model(data)
             self.step_timer.measure("forward")
-            losses, metrics = self.model.loss(pred, data)
+            losses, metrics = self.model.loss_metrics(pred, data)
             if self.conf.get("compose_loss", None) is not None:
                 losses["total"] = compose_loss(
                     {**metrics, **losses}, self.conf.compose_loss
@@ -644,7 +710,7 @@ class Trainer:
             for k, v in loss_metrics.items():
                 val = v.detach()
                 if self.distributed:
-                    torch.distributed.all_reduce(val)
+                    torch.distributed.all_reduce(val.contiguous())
                     val = val / self.num_gpus
                 loss_metrics[k] = val
             self.step_timer.measure("loss_fn")
@@ -666,6 +732,7 @@ class Trainer:
             if do_backward:
                 self.scaler.scale(loss).backward()
                 self.step_timer.measure("backward")
+
                 if self.conf.detect_anomaly:
                     # Check for params without any gradient which causes
                     # problems in distributed training with checkpointing
@@ -677,14 +744,18 @@ class Trainer:
                     if detected_anomaly:
                         raise RuntimeError("Detected anomaly in training.")
                 if do_update:
+                    self.scaler.unscale_(self.optimizer)
                     if self.conf.get("clip_grad", None):
-                        self.scaler.unscale_(self.optimizer)
                         try:
                             torch.nn.utils.clip_grad_norm_(
-                                self.all_params,
+                                self.model.parameters(),
                                 max_norm=self.conf.clip_grad,
                                 error_if_nonfinite=True,
                             )
+                            if log_grad_norm:
+                                loss_metrics["l2/grad_norm"] = torch.Tensor(
+                                    [misc.grad_norm(self.model.parameters())]
+                                )
                             self.scaler.step(self.optimizer)
                         except RuntimeError:
                             logger.warning(
@@ -692,6 +763,10 @@ class Trainer:
                             )
                         self.scaler.update()
                     else:
+                        if log_grad_norm:
+                            loss_metrics["l2/grad_norm"] = torch.Tensor(
+                                [misc.grad_norm(self.model.parameters())]
+                            )
                         self.scaler.step(self.optimizer)
                         self.scaler.update()
                     self.optimizer.zero_grad()
@@ -719,14 +794,22 @@ class Trainer:
         writer: Writer,
         max_iters: int | None = None,
     ):
-        if self.distributed:
-            dataloader.sampler.set_epoch(self.epoch)
-        do_profile = self.conf.profile and self.epoch == 0
+        if self.rank == 0:
+            self.log_data(writer, 0, dataloader, "training")
+        do_profile = self.conf.profile
+        if self.conf.profile_every_epoch is not None:
+            do_profile = do_profile and (
+                (self.epoch % self.conf.profile_every_epoch) == 0
+            )
+        else:
+            do_profile = do_profile and (self.epoch == 0)
         profiler = self.construct_profiler(output_dir) if do_profile else None
         train_loss_metrics = collections.defaultdict(tools.AverageMetric)
+        pr_metrics = collections.defaultdict(tools.PRMetric)
         train_iter = iter(dataloader)
         self.step_timer.hard_reset()
         self.optimizer.zero_grad()
+        scene_num_samples = collections.defaultdict(int)
         for it in range(len(dataloader)):
             if max_iters is not None and it >= max_iters:
                 logger.info(
@@ -734,6 +817,12 @@ class Trainer:
                 )
                 break
             data = next(train_iter)
+            if "scene" in data:
+                for scene_id in data["scene"]:
+                    scene_num_samples[scene_id] += 1
+            if self.rank == 0 and it == 0 and self.epoch == 0:
+                # Log a single batch of data
+                misc.print_summary(data)
             self.step_timer.measure("data")
             self.tot_n_samples += dataloader.batch_size * self.num_gpus
             self.tot_it += 1
@@ -742,11 +831,19 @@ class Trainer:
 
             # Perform gradient accumulation
             do_update = ((it + 1) % self.conf.gradient_accumulation_steps) == 0
-            pred, loss_metrics = self.train_step(data, do_update=do_update)
+
+            do_log = it % self.conf.log_every_iter == 0
+            pred, loss_metrics = self.train_step(
+                data, do_update=do_update, log_grad_norm=do_log
+            )
             if pred is None:
                 continue  # skip iteration due to NaN
-            for k, val in loss_metrics.items():
-                train_loss_metrics[k].update(val)
+            if self.rank == 0:
+                for k, val in loss_metrics.items():
+                    train_loss_metrics[k].update(val)
+
+                for k, labels_preds in self.model.pr_metrics(pred, data).items():
+                    pr_metrics[k].update(*labels_preds)
 
             # Run profiler (stack trace, ...)
             if profiler is not None:
@@ -757,19 +854,27 @@ class Trainer:
                 self.record_memory(output_dir, it)
 
             # Log training metrics (loss, ...) and hardware usage
-            if (it % self.conf.log_every_iter == 0) and self.rank == 0:
+            if do_log and self.rank == 0:
                 time_and_mem_str = self.log_time_and_memory(
                     writer, it, dataloader.batch_size
                 )
                 self.log_train(
-                    writer, it, train_loss_metrics, extra_str=time_and_mem_str
+                    writer,
+                    it,
+                    {**train_loss_metrics, **pr_metrics},
+                    extra_str=time_and_mem_str,
                 )
+
+                self.log_data_stats(writer, it, scene_num_samples, split="training")
+
                 train_loss_metrics.clear()  # Reset training loss aggregators
+                pr_metrics.clear()  # Reset PR metrics
 
             # Make plots of training steps
             if self.conf.plot_every_iter is not None:
                 if it % self.conf.plot_every_iter == 0 and self.rank == 0:
-                    figures = self.model.visualize(pred, data)
+                    with torch.no_grad():
+                        figures = self.model.visualize(pred, data)
                     tools.write_image_summaries(
                         writer, "training", figures, self.current_it
                     )
@@ -779,7 +884,8 @@ class Trainer:
                 raise NotImplementedError()
 
             del pred, data, loss_metrics
-            torch.cuda.empty_cache()  # should be cleared at the first iter
+            if it == 0:
+                torch.cuda.empty_cache()  # should be cleared at the first iter
             self.step_timer.reset()
         self.optimizer.zero_grad()
 
@@ -847,6 +953,38 @@ class Trainer:
             tools.write_image_summaries(writer, f"test_{benchmark_name}", figures, step)
         return summaries, figures
 
+    def run_all_benchmarks(
+        self, output_dir: Path, writer: Writer = None, force: bool = False
+    ):
+        epoch = 0 if force else self.epoch
+        for bench_name, (bench_conf, every_epoch) in self.benchmarks.items():
+            if epoch % every_epoch == 0 and self.rank == 0:
+                # TODO: Make benchmarks distributed!
+                self.test_loop(output_dir, bench_name, bench_conf, writer)
+            if self.distributed:
+                dist.barrier()
+
+    def run_eval(
+        self,
+        output_dir: Path,
+        dataset: datasets.BaseDataset,
+        writer: Writer = None,
+        max_iters: int | None = None,
+    ) -> tuple[Any, ...]:
+        eval_loader = dataset.get_data_loader(
+            self.conf.eval_split,
+            overfit=self.conf.overfit,
+            distributed=self.distributed,
+            pinned=True,
+        )
+        if self.rank == 0 and writer is not None:
+            self.log_data(writer, 0, eval_loader, "eval")
+        self.info(f"Evaluation loader has {len(eval_loader)} batches")
+        eval_results = self.eval_loop(output_dir, eval_loader, max_iters=max_iters)
+        if self.rank == 0 and writer is not None:
+            self.log_eval(writer, 0, eval_results)
+        return eval_results
+
     # ------------------------------------------------------------------------
     # Run full training on dataset (train multiple epochs + validation + test)
     # ------------------------------------------------------------------------
@@ -865,12 +1003,9 @@ class Trainer:
         if writer is None:
             writer = self.get_writer(output_dir, full_conf)
 
-        for bench_name, (bench_conf, _) in self.benchmarks.items():
-            if self.rank == 0 and self.conf.get("eval_init", False):
-                # TODO: Make benchmarks distributed!
-                self.test_loop(output_dir, bench_name, bench_conf, writer)
-            if self.distributed:
-                dist.barrier()
+        if self.conf.get("eval_init", False):
+            self.run_eval(output_dir, dataset, writer)
+            self.run_all_benchmarks(output_dir, writer, force=True)
 
         # Start Loop
         while self.epoch < self.conf.epochs:
@@ -885,7 +1020,7 @@ class Trainer:
 
             # Create data loader
             train_loader = dataset.get_data_loader(
-                "train",
+                self.conf.train_split,
                 distributed=self.distributed,
                 epoch=self.epoch,
                 pinned=True,
@@ -906,29 +1041,14 @@ class Trainer:
                     self.epoch % self.conf.eval_every_epoch == 0
                     or self.epoch == self.conf.epochs  # Run eval in last epoch
                 ):
-                    val_loader = dataset.get_data_loader(
-                        "val", overfit=self.conf.overfit
-                    )
-                    self.info(f"Validation loader has {len(val_loader)} batches")
-                    eval_results = self.eval_loop(output_dir, val_loader)
-                    if self.rank == 0:
-                        self.log_eval(writer, 0, eval_results)
+                    self.run_eval(output_dir, dataset, writer)
 
             # Run test loops
-            for bench_name, (bench_conf, every_epoch) in self.benchmarks.items():
-                if self.epoch % every_epoch == 0 and self.rank == 0:
-                    # TODO: Make benchmarks distributed!
-                    self.test_loop(output_dir, bench_name, bench_conf, writer)
-                if self.distributed:
-                    dist.barrier()
+            self.run_all_benchmarks(output_dir, writer)
 
         # Final evals
-        for bench_name, (bench_conf, _) in self.benchmarks.items():
-            if self.rank == 0:
-                # TODO: Make benchmarks distributed!
-                self.test_loop(output_dir, bench_name, bench_conf, writer)
-            if self.distributed:
-                dist.barrier()
+        self.run_eval(output_dir, dataset, writer)
+        self.run_all_benchmarks(output_dir, writer, force=True)
 
         if writer is not None:
             writer.close()
@@ -954,9 +1074,6 @@ def scale_by_device_count(
     )
     if "train_batch_size" in data_conf and not batch_size_per_gpu:
         data_conf.train_batch_size = int(data_conf.train_batch_size / num_gpus)
-    if "num_workers" in data_conf:
-        # We always scale the workers
-        data_conf.num_workers = int((data_conf.num_workers + num_gpus - 1) / num_gpus)
     return data_conf
 
 
@@ -965,6 +1082,12 @@ def launch_training(output_dir: Path, conf: DictConfig, device: torch.device):
     dataset = datasets.get_dataset(conf.data.name)(
         scale_by_device_count(conf.data, conf.train.num_devices or 1)
     )
+    if conf.train.get("reload_model"):
+        assert conf.train.load_experiment is not None
+        pretrain_dir = settings.TRAINING_PATH / conf.train.load_experiment
+        logger.info(f"Finetuning: Loading model config from {pretrain_dir}.")
+        pretrain_conf = OmegaConf.load(pretrain_dir / "config.yaml")
+        conf.model = OmegaConf.merge(pretrain_conf.model, conf.model)
     model = models.get_model(conf.model.name)(conf.model).to(device)
     if conf.get("lazy_init", True):
         logger.info("Running dummy forward pass to initialize lazy modules.")

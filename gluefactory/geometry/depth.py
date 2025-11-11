@@ -5,6 +5,7 @@ import torch
 
 from ..utils import misc
 from . import reconstruction
+from . import transforms as gtr
 
 
 def shape_normalize(kpts, w, h):
@@ -59,7 +60,6 @@ def project(
     camera_i,
     camera_j,
     T_itoj,
-    validi,
     ccth=None,
     sample_depth_fun=sample_depth,
     sample_depth_kwargs=None,
@@ -70,20 +70,22 @@ def project(
     kpi_3d_i = camera_i.image2cam(kpi)
     kpi_3d_i = kpi_3d_i * di[..., None]
     kpi_3d_j = T_itoj.transform(kpi_3d_i)
-    kpi_j, validj = camera_j.cam2image(kpi_3d_j)
+    kpi_j, valid = camera_j.cam2image(kpi_3d_j)
+    invalid = ~valid
     # di_j = kpi_3d_j[..., -1]
-    validi = validi & validj
     if depthj is None or ccth is None:
-        return kpi_j, validi & validj
+        return kpi_j, valid, invalid
     else:
         # circle consistency
         dj, validj = sample_depth_fun(kpi_j, depthj, **sample_depth_kwargs)
         kpi_j_3d_j = camera_j.image2cam(kpi_j) * dj[..., None]
         kpi_j_i, validj_i = camera_i.cam2image(T_itoj.inv().transform(kpi_j_3d_j))
-        consistent = ((kpi - kpi_j_i) ** 2).sum(-1) < ccth
-        visible = validi & consistent & validj_i & validj
+        reproj_error = ((kpi - kpi_j_i) ** 2).sum(-1)
+        consistent = reproj_error < ccth**2
+        visible = valid & consistent & validj_i & validj
+        invalid = invalid | (validj & ((~validj_i) | (~consistent)))
         # visible = validi
-        return kpi_j, visible
+        return kpi_j, visible, invalid
 
 
 def dense_warp_consistency(
@@ -99,7 +101,8 @@ def dense_warp_consistency(
         -2,
     )
     validi = di > 0
-    kpir, validir = project(kpi, di, depthj, camerai, cameraj, T_itoj, validi, **kwargs)
+    kpir, validir, _ = project(kpi, di, depthj, camerai, cameraj, T_itoj, **kwargs)
+    validir = validir & validi
 
     return kpir.unflatten(-2, depthi.shape[-2:]), validir.unflatten(
         -1, (depthi.shape[-2:])
@@ -119,12 +122,10 @@ def symmetric_reprojection_error(
     d0, valid0 = sample_depth(pts0, depth0)
     d1, valid1 = sample_depth(pts1, depth1)
 
-    pts0_1, visible0 = project(
-        pts0, d0, depth1, camera0, camera1, T_0to1, valid0, ccth=None
-    )
-    pts1_0, visible1 = project(
-        pts1, d1, depth0, camera1, camera0, T_1to0, valid1, ccth=None
-    )
+    pts0_1, visible0, _ = project(pts0, d0, depth1, camera0, camera1, T_0to1, ccth=None)
+    visible0 = visible0 & valid0
+    pts1_0, visible1, _ = project(pts1, d1, depth0, camera1, camera0, T_1to0, ccth=None)
+    visible1 = visible1 & valid1
 
     reprojection_errors_px = 0.5 * (
         (pts0_1 - pts1).norm(dim=-1) + (pts1_0 - pts0).norm(dim=-1)
@@ -139,6 +140,7 @@ def align_pointclouds(
     pts_v1: torch.Tensor,
     weights: torch.Tensor = None,
     return_Rt: bool = False,
+    scale_only: bool = False,
 ) -> tuple[
     reconstruction.Pose | None | tuple[torch.Tensor, torch.Tensor],
     torch.Tensor,
@@ -157,6 +159,10 @@ def align_pointclouds(
 
     t0 = misc.wmean(pts_v0, weights, dim=0)
     t1 = misc.wmean(pts_v1, weights, dim=0)
+
+    if scale_only:
+        t0 = torch.zeros_like(t0)
+        t1 = torch.zeros_like(t1)
     pts_v0 = pts_v0 - t0[None, :]
     pts_v1 = pts_v1 - t1[None, :]
 
@@ -169,19 +175,22 @@ def align_pointclouds(
     pts_v0 = pts_v0 * weights
     # Do not mult here as this is used in the output
     # pts_v1 = pts_v1 * weights
-    try:
-        U, _, V = (pts_v0.T @ pts_v1).double().svd()
-        U: torch.Tensor = U
-        V: torch.Tensor = V
-    except:
-        print("Procustes failed: SVD did not converge!")
-        s = s0 / s1
-        return None, s, pts_v1
-    # build rotation matrix
-    R = (U @ V.T).float()
-    R = torch.stack(
-        [R[:, 0], R[:, 1], R[:, 2] * R.det().sign()], dim=-1
-    )  # ensure a right-handed coordinate system
+    if scale_only:
+        R = torch.eye(3, dtype=t0.dtype, device=t0.device)
+    else:
+        try:
+            U, _, V = (pts_v0.T @ pts_v1).double().svd()
+            U: torch.Tensor = U
+            V: torch.Tensor = V
+        except:
+            print("Procustes failed: SVD did not converge!")
+            s = s0 / s1
+            return None, s, pts_v1
+        # build rotation matrix
+        R = (U @ V.T).float()
+        R = torch.stack(
+            [R[:, 0], R[:, 1], R[:, 2] * R.det().sign()], dim=-1
+        )  # ensure a right-handed coordinate system
     s = s0 / s1
     t = t0 - s * (t1 @ R.T)
     c0_t_c1 = reconstruction.Pose.from_Rt(R, t)
@@ -196,12 +205,13 @@ def batch_align_pointclouds(
     pts_v0: torch.Tensor,
     pts_v1: torch.Tensor,
     weights: torch.Tensor = None,
+    scale_only: bool = False,
 ) -> tuple[reconstruction.Pose | None, torch.Tensor, torch.Tensor]:
 
     in_dims = (0, 0, 0) if weights is not None else (0, 0)
 
     c0_Rt_c1, scales, pts1_v0 = torch.vmap(
-        functools.partial(align_pointclouds, return_Rt=True),
+        functools.partial(align_pointclouds, return_Rt=True, scale_only=scale_only),
         in_dims=in_dims,
         out_dims=0,
     )(pts_v0, pts_v1, weights)

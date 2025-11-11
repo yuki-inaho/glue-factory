@@ -150,17 +150,19 @@ class PosedImageDataset(base_dataset.BaseDataset, torch.utils.data.Dataset):
         img = preprocess.load_image(self.get_image_path(scene, name))
         data = self.preprocessor(img)
         data["T_w2cam"] = pose
-        data["camera"] = camera.scale(data["scales"])
+        data["camera"] = camera.compose_image_transform(data["transform"])
         data["name"] = name
 
         if self.conf.depth_dir:
             depth = load_depth(
                 self.get_depth_path(scene, name), dformat=self.conf.depth_format
             )
-            data["depth"] = self.preprocessor(
-                depth,
-                interpolation="nearest",
-            )["image"]
+            data["depth"] = self.preprocessor.interpolate(
+                depth[None],
+                data["transform"],
+                data["image"].shape[-2:],
+                mode="nearest",
+            )[0]
             data["valid_depth"] = (data["depth"] > 0).float()
 
             assert data["depth"].shape[-2:] == data["image"].shape[-2:]

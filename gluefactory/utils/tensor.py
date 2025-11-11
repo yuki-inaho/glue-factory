@@ -1,8 +1,11 @@
 import functools
 import inspect
+from typing import Any, Callable, Dict, NamedTuple, Union
 
 import numpy as np
 import torch
+import torch._C._functorch as cft  # type: ignore
+from tensordict import TensorClass, tensorclass
 
 
 def autocast(func):
@@ -14,12 +17,11 @@ def autocast(func):
     def wrap(self, *args):
         device = torch.device("cpu")
         dtype = None
-        if isinstance(self, TensorWrapper):
-            if self._data is not None:
-                device = self.device
-                dtype = self.dtype
-        elif not inspect.isclass(self) or not issubclass(self, TensorWrapper):
-            raise ValueError(self)
+        if isinstance(self, torch.Tensor):
+            device = self.device
+            dtype = self.dtype
+        # elif not inspect.isclass(self) or not issubclass(self, torch.Tensor):
+        #     raise ValueError(self)
 
         cast_args = []
         for arg in args:
@@ -37,170 +39,67 @@ def autovmap(func):
 
     @functools.wraps(func)
     def wrap(self, arg):
-        assert isinstance(self, TensorWrapper)
+        # assert isinstance(self, TensorWrapper), self
         cls = self.__class__
         _wrap = lambda d, x: wrap(cls(d), x)
-        if arg.ndim == self._data.ndim and arg.ndim == 1:
+        if arg.ndim == self.data_.ndim and arg.ndim == 1:
             return func(self, arg)
         elif (
             arg.ndim == 3
-            and self._data.ndim == 2
-            and arg.shape[0] == self._data.shape[0]
+            and self.data_.ndim == 2
+            and arg.shape[0] == self.data_.shape[0]
         ):
             # Handle the lazy scenario: wrapper BxP, arg BxNxD
-            return torch.vmap(_wrap)(self._data, arg)
-        elif arg.ndim > self._data.ndim:
-            return torch.vmap(_wrap, in_dims=(None, 0))(self._data, arg)
+            return torch.vmap(_wrap)(self.data_, arg)
+        elif arg.ndim > self.data_.ndim:
+            return torch.vmap(_wrap, in_dims=(None, 0))(self.data_, arg)
         else:
             arg = arg.broadcast_to(self.shape + arg.shape[-1:])
-            if arg.ndim == self._data.ndim:
-                return torch.vmap(_wrap)(self._data, arg)
+            if arg.ndim == self.data_.ndim:
+                return torch.vmap(_wrap)(self.data_, arg)
             else:
                 raise ValueError(
-                    f"Broadcast failed: self._data={self._data.shape}, arg={arg.shape}."
+                    f"Broadcast failed: self.data_={self.data_.shape}, arg={arg.shape}."
                 )
 
     return wrap
 
 
-class TensorWrapper:
+class TensorWrapper(TensorClass, tensor_only=True):
     """Wrapper for PyTorch tensors."""
 
-    _data = None
+    data_: torch.Tensor
 
-    @autocast
-    def __init__(self, data: torch.Tensor):
-        """Wrapper for PyTorch tensors."""
-        self._data = data
-
-    @property
-    def shape(self) -> torch.Size:
-        """Shape of the underlying tensor."""
-        return self._data.shape[:-1]
+    def __post_init__(self):
+        self.batch_size = self.data_.shape[:-1]
 
     @property
     def device(self) -> torch.device:
-        """Get the device of the underlying tensor."""
-        return self._data.device
+        return self.data_.device
 
-    @property
-    def dtype(self) -> torch.dtype:
-        """Get the dtype of the underlying tensor."""
-        return self._data.dtype
-
-    def __getitem__(self, index) -> torch.Tensor:
-        """Get the underlying tensor."""
-        return self.__class__(self._data[index])
-
-    def __setitem__(self, index, item):
-        """Set the underlying tensor."""
-        self._data[index] = item.data
-
-    def to(self, *args, **kwargs):
-        """Move the underlying tensor to a new device."""
-        return self.__class__(self._data.to(*args, **kwargs))
-
-    def cpu(self):
-        """Move the underlying tensor to the CPU."""
-        return self.__class__(self._data.cpu())
-
-    def cuda(self):
-        """Move the underlying tensor to the GPU."""
-        return self.__class__(self._data.cuda())
-
-    def pin_memory(self):
-        """Pin the underlying tensor to memory."""
-        return self.__class__(self._data.pin_memory())
-
-    def float(self):
-        """Cast the underlying tensor to float."""
-        return self.__class__(self._data.float())
-
-    def double(self):
-        """Cast the underlying tensor to double."""
-        return self.__class__(self._data.double())
-
-    def detach(self):
-        """Detach the underlying tensor."""
-        return self.__class__(self._data.detach())
-
-    def numpy(self):
-        """Convert the underlying tensor to a numpy array."""
-        return self._data.detach().cpu().numpy()
-
-    def new_tensor(self, *args, **kwargs):
-        """Create a new tensor of the same type and device."""
-        return self._data.new_tensor(*args, **kwargs)
-
-    def new_zeros(self, *args, **kwargs):
-        """Create a new tensor of the same type and device."""
-        return self._data.new_zeros(*args, **kwargs)
-
-    def new_ones(self, *args, **kwargs):
-        """Create a new tensor of the same type and device."""
-        return self._data.new_ones(*args, **kwargs)
-
-    def new_full(self, *args, **kwargs):
-        """Create a new tensor of the same type and device."""
-        return self._data.new_full(*args, **kwargs)
-
-    def new_empty(self, *args, **kwargs):
-        """Create a new tensor of the same type and device."""
-        return self._data.new_empty(*args, **kwargs)
-
-    def unsqueeze(self, *args, **kwargs):
-        """Create a new tensor of the same type and device."""
-        return self.__class__(self._data.unsqueeze(*args, **kwargs))
-
-    def squeeze(self, *args, **kwargs):
-        """Create a new tensor of the same type and device."""
-        return self.__class__(self._data.squeeze(*args, **kwargs))
-
-    def clone(self, *args, **kwargs):
-        """Create a new tensor of the same type and device."""
-        return self.__class__(self._data.clone(*args, **kwargs))
-
-    @classmethod
-    def stack(cls, objects: list, dim=0, *, out=None):
-        """Stack a list of objects with the same type and shape."""
-        data = torch.stack([obj._data for obj in objects], dim=dim, out=out)
-        return cls(data)
-
-    @classmethod
-    def cat(cls, objects: list, dim=0, *, out=None):
-        if out is not None and isinstance(out, cls):
-            out = out._data
-        data = torch.cat([obj._data for obj in objects], dim=dim, out=out)
-        return cls(data)
-
-    @classmethod
-    def concat(cls, objects: list, dim=0, *, out=None):
-        return cls.cat(objects, dim=dim, out=out)
+    def __deepcopy__(self, memo: Dict[int, Any]) -> "TensorWrapper":
+        # The tensorclass __deepcopy__ will be deprecated, so we clone instead.
+        return self.clone()
 
     @classmethod
     def where(cls, condition, input, other, *, out=None):
         if not (isinstance(input, cls) and isinstance(other, cls)):
             raise ValueError(f"Incorrect inputs: {input}, {other}.")
         if out is not None and isinstance(out, cls):
-            out = out._data
-        ret = torch.where(condition.unsqueeze(-1), input._data, other._data, out=out)
+            out = out.data_
+        ret = torch.where(condition.unsqueeze(-1), input.data_, other.data_, out=out)
         return cls(ret)
 
-    def vmap(self, func, *args, **kwargs):
-        """Vectorized map over the leading dimension."""
-        cls = self.__class__
-        return torch.vmap(lambda d, *x, **xx: func(cls(d), *x, **xx), *args, **kwargs)
-
     @classmethod
-    def __torch_function__(cls, func, types, args=(), kwargs=None):
-        """Support for torch functions."""
-        if kwargs is None:
-            kwargs = {}
-        if func.__name__ == "stack":
-            return cls.stack(*args, **kwargs)
-        if func.__name__ == "cat":
-            return cls.cat(*args, **kwargs)
-        elif func.__name__ == "where":
-            return cls.where(*args, **kwargs)
-        else:
-            return NotImplemented
+    def __torch_function__(
+        cls,
+        func: Callable,
+        types: tuple[type, ...],
+        args: tuple[Any, ...] = (),
+        kwargs: dict[str, Any] | None = None,
+    ):
+        if func == torch.concat:
+            func = torch.cat
+        if func == torch.where:
+            func = cls.where
+        return getattr(cls, func.__name__)(*args, **(kwargs or {}))

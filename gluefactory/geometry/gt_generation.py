@@ -8,7 +8,16 @@ from . import depth, epipolar, homography
 
 @torch.no_grad()
 def gt_matches_from_pose_depth(
-    kp0, kp1, data, pos_th=3, neg_th=5, epi_th=None, cc_th=None, **kw
+    kp0,
+    kp1,
+    data,
+    pos_th=3,
+    neg_th=5,
+    epi_th=None,
+    cc_th=None,
+    min_overlap: float | None = None,
+    add_epi_outliers: bool = True,
+    **kw,
 ):
     if kp0.shape[1] == 0 or kp1.shape[1] == 0:
         b_size, n_kp0 = kp0.shape[:2]
@@ -33,14 +42,42 @@ def gt_matches_from_pose_depth(
         d0, valid0 = depth.sample_depth(kp0, depth0)
         d1, valid1 = depth.sample_depth(kp1, depth1)
 
-    kp0_1, visible0 = depth.project(
-        kp0, d0, depth1, camera0, camera1, T_0to1, valid0, ccth=cc_th
+    kp0_1, visible0, unmatchable0 = depth.project(
+        kp0, d0, depth1, camera0, camera1, T_0to1, ccth=cc_th
     )
-    kp1_0, visible1 = depth.project(
-        kp1, d1, depth0, camera1, camera0, T_1to0, valid1, ccth=cc_th
+    visible0 = visible0 & valid0
+    kp1_0, visible1, unmatchable1 = depth.project(
+        kp1, d1, depth0, camera1, camera0, T_1to0, ccth=cc_th
     )
-    mask_visible = visible0.unsqueeze(-1) & visible1.unsqueeze(-2)
+    visible1 = visible1 & valid1
 
+    unmatchable0 = valid0 & unmatchable0
+    unmatchable1 = valid1 & unmatchable1
+
+    if add_epi_outliers:
+        i1_F_i0 = epipolar.T_to_F(camera0, camera1, T_0to1)
+        image_size0 = data["view0"]["image_size"]
+        image_size1 = data["view1"]["image_size"]
+
+        evalid0 = torch.vmap(
+            epipolar.check_epipolar_intersection,
+        )(kp0, i1_F_i0, image_size1[:, 0], image_size1[:, 1])
+        evalid1 = torch.vmap(
+            epipolar.check_epipolar_intersection,
+        )(kp1, i1_F_i0.transpose(-1, -2), image_size0[:, 0], image_size0[:, 1])
+
+        unmatchable0 = unmatchable0 | (~evalid0)
+        unmatchable1 = unmatchable1 | (~evalid1)
+    if min_overlap is not None and "overlap_0to1" in data:
+        has_overlap = (
+            torch.max(data["overlap_0to1"], data["overlap_1to0"]) > min_overlap
+        )
+        visible0 = visible0 & has_overlap.unsqueeze(-1)
+        visible1 = visible1 & has_overlap.unsqueeze(-1)
+    else:
+        has_overlap = torch.ones_like(data["T_0to1"].data_[:, -1], dtype=bool)
+
+    mask_visible = visible0.unsqueeze(-1) & visible1.unsqueeze(-2)
     # build a distance matrix of size [... x M x N]
     dist0 = torch.sum((kp0_1.unsqueeze(-2) - kp1.unsqueeze(-3)) ** 2, -1)
     dist1 = torch.sum((kp0.unsqueeze(-2) - kp1_0.unsqueeze(-3)) ** 2, -1)
@@ -85,6 +122,10 @@ def gt_matches_from_pose_depth(
         m0 = torch.where((~valid0) & exclude0, types.UNMATCHED_FEATURE, m0)
         m1 = torch.where((~valid1) & exclude1, types.UNMATCHED_FEATURE, m1)
 
+    c0_t_w = data["view0"]["T_w2cam"]
+    c1_t_w = data["view1"]["T_w2cam"]
+    d0 = torch.where(valid0, d0, torch.zeros_like(d0))
+    d1 = torch.where(valid1, d1, torch.zeros_like(d1))
     return {
         "assignment": positive,
         "reward": (dist < pos_th**2).float() - (epi_dist > neg_th).float(),
@@ -92,12 +133,17 @@ def gt_matches_from_pose_depth(
         "matches1": m1,
         "matching_scores0": (m0 > -1).float(),
         "matching_scores1": (m1 > -1).float(),
-        "depth_keypoints0": torch.where(valid0, d0, torch.zeros_like(d0)),
-        "depth_keypoints1": torch.where(valid1, d1, torch.zeros_like(d1)),
+        "depth_keypoints0": d0,
+        "depth_keypoints1": d1,
         "proj_0to1": kp0_1,
         "proj_1to0": kp1_0,
         "visible0": visible0,
         "visible1": visible1,
+        "unmatchable0": unmatchable0,
+        "unmatchable1": unmatchable1,
+        "has_overlap": has_overlap,
+        "xyz_keypoints0": c0_t_w.inv() @ (camera0.image2cam(kp0) * d0.unsqueeze(-1)),
+        "xyz_keypoints1": c1_t_w.inv() @ (camera1.image2cam(kp1) * d1.unsqueeze(-1)),
     }
 
 
