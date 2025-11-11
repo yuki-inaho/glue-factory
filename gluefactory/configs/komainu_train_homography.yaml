@@ -4,9 +4,9 @@
 defaults:
   - data: komainu_colmap
   - model: two_view_pipeline
-  - model/extractor: superpoint_open
-  - model/matcher: lightglue
-  - model/ground_truth: homography_matcher
+  - model@model.extractor: extractor/superpoint_open
+  - model@model.matcher: matcher/lightglue
+  - model@model.ground_truth: matcher/homography_matcher
   - _self_
 
 model:
