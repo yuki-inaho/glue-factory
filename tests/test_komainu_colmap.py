@@ -214,6 +214,90 @@ class TestKomainuColmapDataset:
             assert kp0_warped[:, 0].min() > -img_shape[2], "Warped x-coords too negative"
             assert kp0_warped[:, 1].min() > -img_shape[1], "Warped y-coords too negative"
 
+    def test_sparse_depth_generation(self, dataset_config):
+        """Test 9: Sparse depth maps are generated correctly from COLMAP 3D points."""
+        from gluefactory.datasets.komainu_colmap import KomainuColmapDataset
+
+        dataset = KomainuColmapDataset(dataset_config)
+        data = dataset[0]
+
+        # Check that sparse depth keys are present
+        assert "depth_keypoints0" in data, "depth_keypoints0 key should be present"
+        assert "depth_keypoints1" in data, "depth_keypoints1 key should be present"
+        assert "valid_depth_keypoints0" in data, "valid_depth_keypoints0 key should be present"
+        assert "valid_depth_keypoints1" in data, "valid_depth_keypoints1 key should be present"
+
+        # Get depth data
+        depth0 = data["depth_keypoints0"]
+        depth1 = data["depth_keypoints1"]
+        valid0 = data["valid_depth_keypoints0"]
+        valid1 = data["valid_depth_keypoints1"]
+
+        # Check types and shapes
+        assert isinstance(depth0, torch.Tensor), f"depth_keypoints0 should be tensor, got {type(depth0)}"
+        assert isinstance(depth1, torch.Tensor), f"depth_keypoints1 should be tensor, got {type(depth1)}"
+        assert isinstance(valid0, torch.Tensor), f"valid_depth_keypoints0 should be tensor, got {type(valid0)}"
+        assert isinstance(valid1, torch.Tensor), f"valid_depth_keypoints1 should be tensor, got {type(valid1)}"
+
+        # Check that shape matches keypoints (if keypoints exist)
+        kp0 = data.get("keypoints0", data.get("view0", {}).get("keypoints"))
+        kp1 = data.get("keypoints1", data.get("view1", {}).get("keypoints"))
+
+        if kp0 is not None:
+            assert depth0.shape == (len(kp0), 1), f"depth0 shape {depth0.shape} should match keypoints {(len(kp0), 1)}"
+            assert valid0.shape == (len(kp0), 1), f"valid0 shape {valid0.shape} should match keypoints {(len(kp0), 1)}"
+        else:
+            # If no keypoints, depth arrays should be empty
+            assert depth0.shape == (0, 1), f"depth0 should be [0, 1] when no keypoints, got {depth0.shape}"
+            assert valid0.shape == (0, 1), f"valid0 should be [0, 1] when no keypoints, got {valid0.shape}"
+
+        if kp1 is not None:
+            assert depth1.shape == (len(kp1), 1), f"depth1 shape {depth1.shape} should match keypoints {(len(kp1), 1)}"
+            assert valid1.shape == (len(kp1), 1), f"valid1 shape {valid1.shape} should match keypoints {(len(kp1), 1)}"
+        else:
+            # If no keypoints, depth arrays should be empty
+            assert depth1.shape == (0, 1), f"depth1 should be [0, 1] when no keypoints, got {depth1.shape}"
+            assert valid1.shape == (0, 1), f"valid1 should be [0, 1] when no keypoints, got {valid1.shape}"
+
+        # Check valid mask is boolean
+        assert valid0.dtype == torch.bool, f"valid0 should be bool, got {valid0.dtype}"
+        assert valid1.dtype == torch.bool, f"valid1 should be bool, got {valid1.dtype}"
+
+        # Only test depth values if we have keypoints
+        if kp0 is not None and len(kp0) > 0:
+            # Check that at least some points have valid depth (or none if no 3D points match)
+            num_valid0 = valid0.sum().item()
+            # Note: num_valid0 could be 0 if no COLMAP 3D points match the keypoints
+
+            # Check that valid depths are positive and within reasonable range
+            if num_valid0 > 0:
+                valid_depths0 = depth0[valid0].squeeze()
+                assert (valid_depths0 > 0).all(), "All valid depths should be positive"
+                assert (valid_depths0 < 20.0).all(), f"Depths should be < 20m, got max {valid_depths0.max()}"
+                assert (valid_depths0 > 0.1).all(), f"Depths should be > 0.1m, got min {valid_depths0.min()}"
+
+            # Check that invalid depths are zero
+            if num_valid0 < len(kp0):
+                invalid_depths0 = depth0[~valid0].squeeze()
+                if invalid_depths0.numel() > 0:  # Only check if there are invalid depths
+                    assert (invalid_depths0 == 0).all(), "Invalid depths should be zero"
+
+        if kp1 is not None and len(kp1) > 0:
+            num_valid1 = valid1.sum().item()
+
+            # Check that valid depths are positive and within reasonable range
+            if num_valid1 > 0:
+                valid_depths1 = depth1[valid1].squeeze()
+                assert (valid_depths1 > 0).all(), "All valid depths should be positive"
+                assert (valid_depths1 < 20.0).all(), f"Depths should be < 20m, got max {valid_depths1.max()}"
+                assert (valid_depths1 > 0.1).all(), f"Depths should be > 0.1m, got min {valid_depths1.min()}"
+
+            # Check that invalid depths are zero
+            if num_valid1 < len(kp1):
+                invalid_depths1 = depth1[~valid1].squeeze()
+                if invalid_depths1.numel() > 0:  # Only check if there are invalid depths
+                    assert (invalid_depths1 == 0).all(), "Invalid depths should be zero"
+
 
 if __name__ == "__main__":
     # Run tests with pytest
