@@ -8,3 +8,7 @@
 __pycache__
 temp
 data/weights
+# Auto-generated dataset cache files
+data/*/views.txt
+data/*/covisibility/
+data/*/*/covisibility/
